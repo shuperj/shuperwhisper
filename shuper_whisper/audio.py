@@ -1,0 +1,92 @@
+"""Audio recording using sounddevice."""
+
+import threading
+from typing import Optional
+
+import numpy as np
+import sounddevice as sd
+
+
+class AudioRecorder:
+    """Manages audio input stream and recording state."""
+
+    SAMPLE_RATE = 16000
+    CHANNELS = 1
+    BLOCKSIZE = 1024
+
+    def __init__(self, device: Optional[object] = None):
+        self._device = device
+        self._stream: Optional[sd.InputStream] = None
+        self._recording = False
+        self._audio_data: list[np.ndarray] = []
+        self._lock = threading.Lock()
+
+    def _audio_callback(self, indata, frames, time_info, status):
+        if self._recording:
+            self._audio_data.append(indata.copy())
+
+    def open_stream(self) -> None:
+        """Open the audio input stream."""
+        self._stream = sd.InputStream(
+            samplerate=self.SAMPLE_RATE,
+            channels=self.CHANNELS,
+            callback=self._audio_callback,
+            blocksize=self.BLOCKSIZE,
+            device=self._device,
+        )
+        self._stream.start()
+
+    def close_stream(self) -> None:
+        """Stop and close the audio input stream."""
+        if self._stream is not None:
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
+    def start_recording(self) -> None:
+        """Begin capturing audio frames."""
+        with self._lock:
+            self._recording = True
+            self._audio_data = []
+
+    def stop_recording(self) -> Optional[np.ndarray]:
+        """Stop capturing and return the recorded audio as a flat float32 array.
+
+        Returns None if no audio was captured.
+        """
+        with self._lock:
+            self._recording = False
+            captured = self._audio_data.copy()
+            self._audio_data = []
+        if not captured:
+            return None
+        return np.concatenate(captured, axis=0).flatten().astype(np.float32)
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    @staticmethod
+    def list_devices() -> list[dict]:
+        """Return a list of available audio input devices."""
+        devices = sd.query_devices()
+        result = []
+        default_idx = sd.default.device[0]
+        for i, dev in enumerate(devices):
+            if dev["max_input_channels"] > 0:
+                result.append(
+                    {
+                        "index": i,
+                        "name": dev["name"],
+                        "channels": dev["max_input_channels"],
+                        "sample_rate": dev["default_samplerate"],
+                        "is_default": i == default_idx,
+                    }
+                )
+        return result
+
+    @staticmethod
+    def get_default_device_name() -> str:
+        """Return the name of the default input device."""
+        default_device = sd.query_devices(sd.default.device[0])
+        return default_device["name"]
