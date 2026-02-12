@@ -30,7 +30,11 @@ class ShuperWhisperApp:
             model_size=config.model_size,
             language=config.language,
         )
-        self.injector = TextInjector()
+        self.injector = TextInjector(
+            smart_spacing=config.smart_spacing,
+            bullet_mode=config.bullet_mode,
+            email_mode=config.email_mode,
+        )
         self.hotkey_manager = HotkeyManager(
             hotkey_str=config.hotkey,
             on_start=self._on_record_start,
@@ -124,6 +128,10 @@ class ShuperWhisperApp:
             or new_config.language != self.config.language
         )
         self.config = new_config
+        # Always update injector settings (no restart needed)
+        self.injector.smart_spacing = new_config.smart_spacing
+        self.injector.bullet_mode = new_config.bullet_mode
+        self.injector.email_mode = new_config.email_mode
         if needs_restart and self._running:
             self.shutdown()
             self.transcriber = Transcriber(
