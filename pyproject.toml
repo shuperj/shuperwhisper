@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "shuper-whisper"
+version = "1.0.0"
+description = "Hotkey-based voice dictation for Windows using faster-whisper"
+requires-python = ">=3.12"
+dependencies = [
+    "faster-whisper",
+    "sounddevice",
+    "numpy",
+    "keyboard",
+    "pyperclip",
+    "pystray>=0.19.5",
+    "Pillow>=10.0",
+]
+
+[project.gui-scripts]
+shuper-whisper = "shuper_whisper.app:main"
+
+[tool.setuptools.packages.find]
+include = ["shuper_whisper*"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-mock",
+    "pytest-cov",
+    "pyinstaller",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
