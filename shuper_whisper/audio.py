@@ -20,15 +20,18 @@ class AudioRecorder:
         self._recording = False
         self._audio_data: list[np.ndarray] = []
         self._lock = threading.Lock()
+        self._open_channels = self.CHANNELS
         # Level monitoring for waveform visualization
         self._level_history: list[float] = []
         self._level_lock = threading.Lock()
 
     def _audio_callback(self, indata, frames, time_info, status):
+        # Mix down to mono if device was opened with multiple channels
+        mono = indata.mean(axis=1, keepdims=True) if indata.shape[1] > 1 else indata
         if self._recording:
-            self._audio_data.append(indata.copy())
+            self._audio_data.append(mono.copy())
         # Always compute RMS level for visualization
-        rms = float(np.sqrt(np.mean(indata ** 2)))
+        rms = float(np.sqrt(np.mean(mono ** 2)))
         with self._level_lock:
             self._level_history.append(rms)
             # Keep ~2 seconds of history at callback rate (~15 callbacks/sec)
@@ -36,10 +39,17 @@ class AudioRecorder:
                 self._level_history = self._level_history[-60:]
 
     def open_stream(self) -> None:
-        """Open the audio input stream."""
+        """Open the audio input stream.
+
+        Some devices (Bluetooth headsets, certain USB interfaces) are stereo-only
+        and reject mono (1-channel) requests with paInvalidChannelCount. Query the
+        device's max channels and open with up to 2; the callback mixes down to mono.
+        """
+        device_info = sd.query_devices(self._device, "input")
+        self._open_channels = max(1, min(int(device_info["max_input_channels"]), 2))
         self._stream = sd.InputStream(
             samplerate=self.SAMPLE_RATE,
-            channels=self.CHANNELS,
+            channels=self._open_channels,
             callback=self._audio_callback,
             blocksize=self.BLOCKSIZE,
             device=self._device,

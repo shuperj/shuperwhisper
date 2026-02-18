@@ -2,7 +2,7 @@
 ; Inno Setup Script
 
 #define MyAppName "ShuperWhisper"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "ShuperWhisper"
 #define MyAppURL "https://github.com/shuperj/shuperwhisper"
 #define MyAppExeName "ShuperWhisper.exe"
