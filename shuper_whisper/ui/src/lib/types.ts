@@ -3,7 +3,6 @@ export interface AppConfig {
   model_size: string;
   input_device: number | string | null;
   language: string;
-  autostart: boolean;
   smart_spacing: boolean;
   bullet_mode: boolean;
   email_mode: boolean;

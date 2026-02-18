@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AppConfig, ConfigOptions, Device } from "@/lib/types";
 import { captureHotkey } from "@/lib/bridge";
-import { Keyboard, Mic, Globe, Monitor, MapPin, Palette } from "lucide-react";
+import { Keyboard, Mic, Globe, MapPin, Palette } from "lucide-react";
 import { StyledSelect } from "./StyledSelect";
 
 interface GeneralTabProps {
@@ -147,33 +147,6 @@ export function GeneralTab({
           options={positionOptions}
         />
       </FieldRow>
-
-      <div className="border-t border-white/[0.06]" />
-
-      {/* Autostart */}
-      <div className="flex items-center gap-4 py-4">
-        <div className="flex items-center gap-3 w-[150px] shrink-0">
-          <Monitor size={16} className="text-text-muted" />
-          <label className="text-[13px] text-text-secondary">Autostart</label>
-        </div>
-        <button
-          onClick={() => updateField("autostart", !config.autostart)}
-          className={`relative w-11 h-6 rounded-full transition-all duration-200 ${
-            config.autostart
-              ? "bg-accent shadow-[0_0_12px_rgba(255,68,102,0.3)]"
-              : "bg-white/10"
-          }`}
-        >
-          <span
-            className={`absolute top-[3px] w-[18px] h-[18px] rounded-full bg-white transition-all duration-200 shadow-sm ${
-              config.autostart ? "left-[23px]" : "left-[3px]"
-            }`}
-          />
-        </button>
-        <span className="text-[12px] text-text-muted">
-          Start with Windows
-        </span>
-      </div>
 
       {/* Appearance */}
       <div className="glass rounded-xl p-6 mt-6">
