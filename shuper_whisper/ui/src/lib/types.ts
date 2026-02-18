@@ -36,9 +36,16 @@ export interface Device {
 }
 
 export interface TrainingStatus {
-  status: "recording" | "transcribing" | "done" | "error";
+  status: "recording" | "transcribing" | "round_done" | "done" | "error";
   word: string;
+  round?: number;
+  totalRounds?: number;
   success?: boolean;
+  alreadyRecognized?: boolean;
+  learnedHint?: string | null;
+  matchCount?: number;
+  roundSuccess?: boolean;
   transcribed?: string;
+  results?: Array<{ round: number; transcribed: string; success: boolean }>;
   error?: string;
 }

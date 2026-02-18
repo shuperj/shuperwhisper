@@ -192,10 +192,36 @@ class WindowAPI:
             return self._app.dictionary.remove(word)
         return False
 
-    def train_word(self, word):
-        """Record audio, transcribe, and check against word.
+    def update_word(self, old_word, new_word, phonetic=''):
+        """Update an existing dictionary entry's word and/or phonetic hint."""
+        old_word = (old_word or '').strip()
+        new_word = (new_word or '').strip()
+        phonetic = (phonetic or '').strip()
+        if not old_word or not new_word:
+            return {'success': False, 'error': 'Both old and new word are required'}
 
-        Pushes real-time status updates to the React UI via evaluate_js.
+        if self._app and hasattr(self._app, 'dictionary'):
+            result = self._app.dictionary.update(old_word, new_word, phonetic)
+            if result:
+                return {'success': True}
+            return {'success': False, 'error': 'Word not found'}
+        return {'success': False, 'error': 'Dictionary not available'}
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Strip punctuation and whitespace for comparison."""
+        import re
+        return re.sub(r'[^\w\s]', '', text).strip().lower()
+
+    def train_word(self, word):
+        """Record 3 rounds, learn what Whisper hears, auto-build phonetic hint.
+
+        Instead of pass/fail validation, training *teaches* the dictionary
+        by collecting Whisper's natural transcription of the user's speech.
+        If Whisper doesn't already recognize the word, the most common
+        transcription becomes the phonetic hint so future dictation maps
+        correctly (e.g. Whisper hears "mackinaw" → phonetic hint "mackinaw"
+        → initial_prompt includes "Mackinac (mackinaw)").
         """
         word = (word or '').strip()
         if not word:
@@ -216,33 +242,109 @@ class WindowAPI:
                 except Exception:
                     pass
 
+        total_rounds = 3
+        results = []
+        transcriptions = []
+
+        # Build dictionary hints to bias transcription
+        initial_prompt = None
+        hotwords = None
+        if hasattr(self._app, 'dictionary'):
+            initial_prompt = self._app.dictionary.get_initial_prompt() or None
+            hotwords = self._app.dictionary.get_hotwords() or None
+
         try:
-            _push({'status': 'recording', 'word': word})
+            for round_num in range(1, total_rounds + 1):
+                _push({
+                    'status': 'recording',
+                    'word': word,
+                    'round': round_num,
+                    'totalRounds': total_rounds,
+                })
 
-            recorder = self._app.recorder
-            recorder.start_recording()
-            time.sleep(3)
-            audio_data = recorder.stop_recording()
+                recorder = self._app.recorder
+                recorder.start_recording()
+                time.sleep(3)
+                audio_data = recorder.stop_recording()
 
-            _push({'status': 'transcribing', 'word': word})
+                _push({
+                    'status': 'transcribing',
+                    'word': word,
+                    'round': round_num,
+                    'totalRounds': total_rounds,
+                })
 
-            transcriber = self._app.transcriber
-            transcribed_text = transcriber.transcribe(audio_data).strip().lower()
+                transcriber = self._app.transcriber
+                raw = transcriber.transcribe(
+                    audio_data,
+                    initial_prompt=initial_prompt,
+                    hotwords=hotwords,
+                ).strip()
+                normalized = self._normalize(raw)
 
-            success = transcribed_text == word.lower()
-            if success and hasattr(self._app, 'dictionary'):
+                is_match = normalized == self._normalize(word)
+                transcriptions.append(normalized)
+
+                results.append({
+                    'round': round_num,
+                    'transcribed': normalized,
+                    'success': is_match,
+                })
+
+                _push({
+                    'status': 'round_done',
+                    'word': word,
+                    'round': round_num,
+                    'totalRounds': total_rounds,
+                    'transcribed': normalized,
+                    'roundSuccess': is_match,
+                })
+
+                # Pause between rounds for user to see result
+                if round_num < total_rounds:
+                    time.sleep(1)
+
+            # Determine if Whisper already recognizes the word
+            match_count = sum(
+                1 for t in transcriptions if t == self._normalize(word)
+            )
+            already_recognized = match_count >= 2
+
+            # Auto-build phonetic hint from what Whisper actually heard
+            learned_hint = None
+            if not already_recognized and hasattr(self._app, 'dictionary'):
+                # Find the most common non-matching transcription
+                from collections import Counter
+                misheard = [
+                    t for t in transcriptions
+                    if t and t != self._normalize(word)
+                ]
+                if misheard:
+                    learned_hint = Counter(misheard).most_common(1)[0][0]
+                    self._app.dictionary.add(word, learned_hint)
+
+            # Always mark as trained — the point is collecting data
+            if hasattr(self._app, 'dictionary'):
                 self._app.dictionary.mark_trained(word)
 
             _push({
                 'status': 'done',
                 'word': word,
-                'success': success,
-                'transcribed': transcribed_text,
+                'success': True,
+                'alreadyRecognized': already_recognized,
+                'learnedHint': learned_hint,
+                'matchCount': match_count,
+                'totalRounds': total_rounds,
+                'results': results,
             })
 
             return {
-                'success': success,
-                'transcribed': transcribed_text,
+                'success': True,
+                'alreadyRecognized': already_recognized,
+                'learnedHint': learned_hint,
+                'matchCount': match_count,
+                'totalRounds': total_rounds,
+                'results': results,
             }
 
         except Exception as e:

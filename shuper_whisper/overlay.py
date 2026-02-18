@@ -1,10 +1,30 @@
 """Floating recording overlay with CSS animations via pywebview."""
 
 import ctypes
+import ctypes.wintypes
 import threading
 from typing import Callable, Optional
 
 from .config import FORMAT_MODE_LABELS, FORMAT_MODE_ORDER
+
+
+# Win32 structures for multi-monitor detection
+class _RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", ctypes.c_long),
+        ("top", ctypes.c_long),
+        ("right", ctypes.c_long),
+        ("bottom", ctypes.c_long),
+    ]
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_ulong),
+        ("rcMonitor", _RECT),
+        ("rcWork", _RECT),
+        ("dwFlags", ctypes.c_ulong),
+    ]
 
 # Embedded HTML/CSS/JS for the overlay — no external files, no PyInstaller path issues
 OVERLAY_HTML = """\
@@ -375,24 +395,50 @@ class RecordingOverlay:
         except Exception as e:
             print(f"WARNING: Win32 overlay styles failed: {e}")
 
+    @staticmethod
+    def _get_active_monitor_work_area() -> tuple[int, int, int, int]:
+        """Get the work area of the monitor containing the foreground window.
+
+        Returns (x, y, width, height) of the monitor's work area.
+        Falls back to the primary monitor if no foreground window exists.
+        """
+        user32 = ctypes.windll.user32
+        MONITOR_DEFAULTTOPRIMARY = 0x00000001
+
+        fg_hwnd = user32.GetForegroundWindow()
+        if fg_hwnd:
+            hmon = user32.MonitorFromWindow(fg_hwnd, MONITOR_DEFAULTTOPRIMARY)
+            mi = _MONITORINFO()
+            mi.cbSize = ctypes.sizeof(_MONITORINFO)
+            if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+                rc = mi.rcWork
+                return (rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
+
+        # Fallback: primary monitor
+        return (
+            0,
+            0,
+            user32.GetSystemMetrics(0),
+            user32.GetSystemMetrics(1),
+        )
+
     def _position_window(self) -> None:
-        """Position overlay on screen using Win32 API."""
+        """Position overlay on the monitor containing the focused window."""
         if not self._hwnd:
             return
 
-        screen_w = ctypes.windll.user32.GetSystemMetrics(0)
-        screen_h = ctypes.windll.user32.GetSystemMetrics(1)
+        mon_x, mon_y, mon_w, mon_h = self._get_active_monitor_work_area()
 
         w = self.WINDOW_W
         h = self.WINDOW_H_TOGGLE if self._mode == "toggle" else self.WINDOW_H_HOLD
-        x = (screen_w - w) // 2
+        x = mon_x + (mon_w - w) // 2
 
         positions = {
-            "top_center": 80,
-            "center": (screen_h - h) // 2,
-            "bottom_center": screen_h - h - 100,
+            "top_center": mon_y + 80,
+            "center": mon_y + (mon_h - h) // 2,
+            "bottom_center": mon_y + mon_h - h - 100,
         }
-        y = positions.get(self._position, 80)
+        y = positions.get(self._position, mon_y + 80)
 
         SWP_NOACTIVATE = 0x0010
         SWP_NOZORDER = 0x0004

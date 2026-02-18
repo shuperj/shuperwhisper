@@ -34,6 +34,8 @@ def _load_env() -> None:
 def main():
     multiprocessing.freeze_support()
 
+    print("[main] Starting ShuperWhisper...", flush=True)
+
     # Load API keys (ANTHROPIC_API_KEY, etc.) from workspace .env
     _load_env()
 
@@ -44,6 +46,7 @@ def main():
         sys.exit(0)
 
     config = load_config()
+    print(f"[main] Config loaded: hotkey={config.hotkey}, model={config.model_size}", flush=True)
 
     if "--console" in sys.argv:
         from shuper_whisper.app import ShuperWhisperApp
@@ -53,7 +56,9 @@ def main():
     else:
         from shuper_whisper.tray import TrayController
 
+        print("[main] Creating TrayController...", flush=True)
         tray = TrayController(config)
+        print("[main] Starting tray.run()...", flush=True)
         tray.run()
 
 

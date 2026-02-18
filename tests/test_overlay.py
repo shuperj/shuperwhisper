@@ -83,6 +83,100 @@ class TestOverlayConstants:
         assert RecordingOverlay.WINDOW_H_TOGGLE > RecordingOverlay.WINDOW_H_HOLD
 
 
+class TestOverlayMultiMonitor:
+    def test_position_window_centers_on_active_monitor(self):
+        o = RecordingOverlay(position="top_center")
+        o._hwnd = 12345
+        o._mode = "hold"
+
+        from unittest.mock import patch, MagicMock
+
+        with patch.object(
+            RecordingOverlay,
+            "_get_active_monitor_work_area",
+            return_value=(1920, 0, 1920, 1080),
+        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
+            o._position_window()
+
+            mock_swp.assert_called_once()
+            args = mock_swp.call_args[0]
+            x, y = args[2], args[3]
+            expected_x = 1920 + (1920 - RecordingOverlay.WINDOW_W) // 2
+            assert x == expected_x
+            assert y == 0 + 80  # top_center offset
+
+    def test_position_center_on_secondary_monitor(self):
+        o = RecordingOverlay(position="center")
+        o._hwnd = 12345
+        o._mode = "toggle"
+
+        from unittest.mock import patch
+
+        with patch.object(
+            RecordingOverlay,
+            "_get_active_monitor_work_area",
+            return_value=(1920, 0, 2560, 1440),
+        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
+            o._position_window()
+
+            args = mock_swp.call_args[0]
+            x, y = args[2], args[3]
+            expected_x = 1920 + (2560 - RecordingOverlay.WINDOW_W) // 2
+            expected_y = 0 + (1440 - RecordingOverlay.WINDOW_H_TOGGLE) // 2
+            assert x == expected_x
+            assert y == expected_y
+
+    def test_position_bottom_center_respects_work_area(self):
+        o = RecordingOverlay(position="bottom_center")
+        o._hwnd = 12345
+        o._mode = "hold"
+
+        from unittest.mock import patch
+
+        # Work area height 1040 (40px taskbar)
+        with patch.object(
+            RecordingOverlay,
+            "_get_active_monitor_work_area",
+            return_value=(0, 0, 1920, 1040),
+        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
+            o._position_window()
+
+            args = mock_swp.call_args[0]
+            y = args[3]
+            expected_y = 0 + 1040 - RecordingOverlay.WINDOW_H_HOLD - 100
+            assert y == expected_y
+
+    def test_no_hwnd_is_noop(self):
+        o = RecordingOverlay()
+        o._hwnd = None
+
+        from unittest.mock import patch
+
+        with patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
+            o._position_window()
+            mock_swp.assert_not_called()
+
+    def test_primary_monitor_offset_at_origin(self):
+        o = RecordingOverlay(position="top_center")
+        o._hwnd = 12345
+        o._mode = "hold"
+
+        from unittest.mock import patch
+
+        with patch.object(
+            RecordingOverlay,
+            "_get_active_monitor_work_area",
+            return_value=(0, 0, 1920, 1080),
+        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
+            o._position_window()
+
+            args = mock_swp.call_args[0]
+            x, y = args[2], args[3]
+            expected_x = (1920 - RecordingOverlay.WINDOW_W) // 2
+            assert x == expected_x
+            assert y == 80
+
+
 class TestOverlayColors:
     def test_hex_alpha_full(self):
         result = RecordingOverlay._hex_alpha("#ff4466", 1.0)
