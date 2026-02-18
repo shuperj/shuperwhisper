@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.manifest
+
+# Pytest
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# PyInstaller
+*.exe
+*.spec
+
+# OS
+Thumbs.db
+Desktop.ini
+nul
+
+# Python-compiler toolkit
+python-compiler/
+compiler*.toml
+
+# Build & install scripts
+build.bat
+install.bat
+
+# Documentation & config (not source)
+CLAUDE.md
+AUTOSTART-GUIDE.md
+DICTATION-SETUP.md
+.claude/
+
+# Legacy / replaced files
+whisper-dictation-cpu.py
+requirements.txt
+requirements-dictation.txt
+
+# React UI build artifacts
+shuper_whisper/ui/node_modules/
+shuper_whisper/ui/dist/
+shuper_whisper/ui/tsconfig.tsbuildinfo
+
+# Runtime
+config.json
+*.wav
+*.mp3
