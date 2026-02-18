@@ -15,6 +15,8 @@ dependencies = [
     "pyperclip",
     "pystray>=0.19.5",
     "Pillow>=10.0",
+    "anthropic>=0.39.0",
+    "pywebview>=5.0.0",
 ]
 
 [project.gui-scripts]

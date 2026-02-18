@@ -20,10 +20,20 @@ class AudioRecorder:
         self._recording = False
         self._audio_data: list[np.ndarray] = []
         self._lock = threading.Lock()
+        # Level monitoring for waveform visualization
+        self._level_history: list[float] = []
+        self._level_lock = threading.Lock()
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self._recording:
             self._audio_data.append(indata.copy())
+        # Always compute RMS level for visualization
+        rms = float(np.sqrt(np.mean(indata ** 2)))
+        with self._level_lock:
+            self._level_history.append(rms)
+            # Keep ~2 seconds of history at callback rate (~15 callbacks/sec)
+            if len(self._level_history) > 60:
+                self._level_history = self._level_history[-60:]
 
     def open_stream(self) -> None:
         """Open the audio input stream."""
@@ -48,6 +58,8 @@ class AudioRecorder:
         with self._lock:
             self._recording = True
             self._audio_data = []
+        with self._level_lock:
+            self._level_history.clear()
 
     def stop_recording(self) -> Optional[np.ndarray]:
         """Stop capturing and return the recorded audio as a flat float32 array.
@@ -61,6 +73,25 @@ class AudioRecorder:
         if not captured:
             return None
         return np.concatenate(captured, axis=0).flatten().astype(np.float32)
+
+    def get_levels(self, count: int = 30) -> list[float]:
+        """Return the most recent RMS levels for waveform display.
+
+        Returns exactly `count` values, resampled from history.
+        """
+        with self._level_lock:
+            history = self._level_history.copy()
+
+        if not history:
+            return [0.0] * count
+
+        if len(history) >= count:
+            # Take the most recent `count` values
+            return history[-count:]
+
+        # Pad with zeros on the left if not enough history
+        padding = [0.0] * (count - len(history))
+        return padding + history
 
     @property
     def is_recording(self) -> bool:

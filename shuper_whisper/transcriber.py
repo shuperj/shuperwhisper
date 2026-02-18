@@ -34,12 +34,20 @@ class Transcriber:
         )
         print("Model loaded!")
 
-    def transcribe(self, audio: np.ndarray, beam_size: int = 5) -> str:
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        beam_size: int = 5,
+        initial_prompt: str | None = None,
+        hotwords: str | None = None,
+    ) -> str:
         """Transcribe audio data to text.
 
         Args:
             audio: Float32 numpy array of audio samples at 16kHz mono.
             beam_size: Beam search width.
+            initial_prompt: Optional prompt to bias transcription vocabulary.
+            hotwords: Optional comma-separated hotwords for recognition bias.
 
         Returns:
             Transcribed text, or empty string if no speech detected.
@@ -48,11 +56,17 @@ class Transcriber:
             raise RuntimeError("Model not loaded. Call load_model() first.")
 
         lang = None if self._language == "auto" else self._language
-        segments, info = self._model.transcribe(
-            audio,
-            beam_size=beam_size,
-            language=lang,
-        )
+
+        kwargs = {
+            "beam_size": beam_size,
+            "language": lang,
+        }
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+        if hotwords:
+            kwargs["hotwords"] = hotwords
+
+        segments, info = self._model.transcribe(audio, **kwargs)
         text = " ".join(segment.text for segment in segments).strip()
         return text
 

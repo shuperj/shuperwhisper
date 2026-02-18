@@ -1,0 +1,225 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg-dark: var(--sw-bg, #1a1a2e);
+  --color-bg-medium: #252538;
+  --color-bg-light: #2f2f44;
+  --color-sw-border: #3a3a5c;
+  --color-accent: var(--sw-accent, #ff4466);
+  --color-accent-hover: var(--sw-accent-hover, #ff5577);
+  --color-text-primary: #e8e8ee;
+  --color-text-secondary: #cccccc;
+  --color-text-muted: #888888;
+  --color-control-bg: #2f2f44;
+  --color-control-border: #4a4a6a;
+  --color-control-hover: #3f3f54;
+  --color-success: #66cc88;
+  --color-warning: #ffaa44;
+  --color-error: #ff4466;
+}
+
+/*
+ * All custom styles MUST live in @layer blocks.
+ * In Tailwind v4, unlayered CSS beats ALL layered CSS (including utilities),
+ * which would make every py-*, px-*, mt-*, gap-*, space-y-* class useless.
+ * Tailwind's Preflight already handles box-sizing and resets.
+ */
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: var(--sw-bg, #1a1a2e);
+    color: var(--color-text-primary);
+  }
+
+  body {
+    position: relative;
+  }
+
+  /* Ambient glow effects on body */
+  body::before {
+    content: "";
+    position: fixed;
+    top: -40%;
+    left: -20%;
+    width: 60%;
+    height: 60%;
+    background: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--sw-accent, #ff4466) 6%, transparent) 0%,
+      transparent 70%
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  body::after {
+    content: "";
+    position: fixed;
+    bottom: -30%;
+    right: -20%;
+    width: 50%;
+    height: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(100, 100, 255, 0.04) 0%,
+      transparent 70%
+    );
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+
+  /* Color picker styling */
+  input[type="color"] {
+    -webkit-appearance: none;
+    appearance: none;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    cursor: pointer;
+    padding: 0;
+    background: transparent;
+  }
+
+  input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+  }
+
+  input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 5px;
+  }
+
+  input[type="color"]:hover {
+    border-color: rgba(255, 255, 255, 0.25);
+  }
+}
+
+@layer components {
+  /* Glassmorphism utilities */
+  .glass {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.04);
+  }
+
+  .glass-strong {
+    background: rgba(255, 255, 255, 0.07);
+    backdrop-filter: blur(30px);
+    -webkit-backdrop-filter: blur(30px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.06);
+  }
+
+  .glass-input {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.2s ease;
+  }
+
+  .glass-input:hover {
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+
+  .glass-input:focus {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--sw-accent, #ff4466);
+    box-shadow: 0 0 16px color-mix(in srgb, var(--sw-accent, #ff4466) 20%, transparent);
+    outline: none;
+  }
+
+  /* Accent glow button */
+  .btn-accent {
+    background: var(--sw-accent, #ff4466);
+    color: white;
+    border: none;
+    transition: all 0.2s ease;
+    box-shadow: 0 0 20px color-mix(in srgb, var(--sw-accent, #ff4466) 25%, transparent);
+  }
+
+  .btn-accent:hover {
+    background: var(--sw-accent-hover, #ff5577);
+    box-shadow: 0 0 30px color-mix(in srgb, var(--sw-accent, #ff4466) 40%, transparent);
+    transform: translateY(-1px);
+  }
+
+  .btn-accent:active {
+    transform: translateY(0);
+    box-shadow: 0 0 15px color-mix(in srgb, var(--sw-accent, #ff4466) 20%, transparent);
+  }
+
+  /* Ghost/outline button */
+  .btn-ghost {
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--color-text-secondary);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transition: all 0.2s ease;
+  }
+
+  .btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: var(--color-text-primary);
+  }
+
+  /* Fix native select dropdown arrows */
+  select.glass-input {
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+  }
+
+  select.glass-input::-ms-expand {
+    display: none;
+  }
+
+  /* Recording pulse animation */
+  .animate-pulse-glow {
+    animation: pulse-glow 1.5s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 8px color-mix(in srgb, var(--sw-accent, #ff4466) 30%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 20px color-mix(in srgb, var(--sw-accent, #ff4466) 60%, transparent);
+  }
+}
+
+/* Radix popper z-index — must be unlayered to override inline styles */
+[data-radix-popper-content-wrapper] {
+  z-index: 50 !important;
+}
