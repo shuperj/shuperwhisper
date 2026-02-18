@@ -17,9 +17,8 @@ from .app import (
     STATE_RECORDING,
     ShuperWhisperApp,
 )
-from .autostart import disable_autostart, enable_autostart, is_autostart_enabled
 from .bridge import WindowAPI
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, load_config
 from .overlay import OVERLAY_HTML
 
 # Icon colors for each state
@@ -149,15 +148,6 @@ class TrayController:
 
         api._window = window
 
-    def _toggle_autostart(self, icon, item) -> None:
-        if is_autostart_enabled():
-            disable_autostart()
-            self.config.autostart = False
-        else:
-            enable_autostart()
-            self.config.autostart = True
-        save_config(self.config)
-
     def _quit(self, icon, item) -> None:
         self.app.shutdown()
         icon.stop()
@@ -171,12 +161,6 @@ class TrayController:
     def _build_menu(self) -> pystray.Menu:
         return pystray.Menu(
             pystray.MenuItem("Settings...", self._open_settings),
-            pystray.Menu.SEPARATOR,
-            pystray.MenuItem(
-                "Start with Windows",
-                self._toggle_autostart,
-                checked=lambda item: is_autostart_enabled(),
-            ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Quit", self._quit),
         )

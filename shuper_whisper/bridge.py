@@ -117,7 +117,6 @@ class WindowAPI:
                 model_size=data.get('model_size', 'base'),
                 input_device=data.get('input_device'),
                 language=data.get('language', 'en'),
-                autostart=data.get('autostart', False),
                 smart_spacing=data.get('smart_spacing', True),
                 bullet_mode=data.get('bullet_mode', False),
                 email_mode=data.get('email_mode', False),

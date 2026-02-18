@@ -83,7 +83,6 @@ class AppConfig:
     model_size: str = "base"
     input_device: object = None  # int index or str name or None for default
     language: str = "en"
-    autostart: bool = False
     smart_spacing: bool = True
     bullet_mode: bool = False
     email_mode: bool = False
@@ -124,7 +123,7 @@ class AppConfig:
 
 
 _CONFIG_FIELDS = [
-    "hotkey", "model_size", "input_device", "language", "autostart",
+    "hotkey", "model_size", "input_device", "language",
     "smart_spacing", "bullet_mode", "email_mode",
     "hotkey_mode", "format_mode", "email_tone", "prompt_detail",
     "overlay_position",

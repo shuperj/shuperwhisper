@@ -185,15 +185,6 @@ def open_settings_dialog(
         values=list(pos_labels.values()), state="readonly", width=26,
     ).grid(row=5, column=1, sticky="ew", **pad)
 
-    # Autostart
-    ttk.Separator(general_frame, orient="horizontal").grid(
-        row=6, column=0, columnspan=2, sticky="ew", pady=12, padx=20
-    )
-    autostart_var = tk.BooleanVar(value=config.autostart)
-    ttk.Checkbutton(general_frame, text="Start with Windows", variable=autostart_var).grid(
-        row=7, column=0, columnspan=2, sticky="w", **pad
-    )
-
     # ── Tab 2: Formatting ───────────────────────────────────────────
     format_frame = ttk.Frame(notebook)
     notebook.add(format_frame, text="Formatting")
@@ -421,7 +412,6 @@ def open_settings_dialog(
             model_size=model_var.get(),
             input_device=input_device,
             language=lang_code,
-            autostart=autostart_var.get(),
             smart_spacing=smart_spacing_var.get(),
             bullet_mode=bullet_var.get(),
             email_mode=False,

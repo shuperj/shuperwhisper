@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Shuper_Wht.png" alt="ShuperWhisper" width="200">
+</p>
+
 # ShuperWhisper
 
 **Hotkey-powered voice dictation for Windows.** Hold a key, speak, release — your words appear wherever your cursor is.
@@ -136,7 +140,6 @@ shuper_whisper/
   bridge.py                Python <-> React communication
   settings_ui.py           Legacy tkinter settings (unused)
   theme.py                 UI color definitions
-  autostart.py             Windows registry autostart
   ui/                      React + Vite + Tailwind settings panel
 ```
 
