@@ -169,41 +169,59 @@ class ShuperWhisperApp:
         if self._running:
             return
 
+        print("[app] start() called", flush=True)
         self._set_state(STATE_LOADING)
 
         # Load the model
+        print("[app] Loading model...", flush=True)
         self.transcriber.load_model()
+        print("[app] Model loaded", flush=True)
 
         # Print device info
         if self.config.input_device is not None:
-            print(f"Input device: {self.config.input_device}")
+            print(f"[app] Input device: {self.config.input_device}", flush=True)
         else:
-            print(f"Input device: {AudioRecorder.get_default_device_name()} (default)")
+            print(f"[app] Input device: {AudioRecorder.get_default_device_name()} (default)", flush=True)
 
-        print(f"Hotkey: [{self.config.hotkey}] | Mode: Smart (quick tap = toggle, hold = hold)")
+        print(f"[app] Hotkey: [{self.config.hotkey}] | Mode: Smart", flush=True)
 
         # Start audio stream
+        print("[app] Opening audio stream...", flush=True)
         self.recorder.open_stream()
+        print("[app] Audio stream open", flush=True)
 
         # Register hotkey handlers
+        print("[app] Registering hotkey...", flush=True)
         self.hotkey_manager.register()
+        print("[app] Hotkey registered", flush=True)
 
         # Start overlay thread
+        print("[app] Starting overlay...", flush=True)
         self.overlay.start()
+        print("[app] Overlay started", flush=True)
 
         self._running = True
         self._set_state(STATE_IDLE)
+        print("[app] Ready! Listening for hotkey.", flush=True)
 
-    def shutdown(self) -> None:
-        """Stop the application cleanly."""
+    def shutdown(self, destroy_overlay: bool = True) -> None:
+        """Stop the application cleanly.
+
+        Args:
+            destroy_overlay: If False, keep the overlay window alive (used by
+                reload_config so the persistent pywebview window isn't destroyed).
+        """
         if not self._running:
             return
         self._stop_level_monitoring()
         self.hotkey_manager.unregister()
         self.recorder.close_stream()
-        self.overlay.destroy()
+        if destroy_overlay:
+            self.overlay.destroy()
+        else:
+            self.overlay.hide()
         self._running = False
-        print("ShuperWhisper stopped.")
+        print("ShuperWhisper stopped.", flush=True)
 
     def reload_config(self, new_config: AppConfig) -> None:
         """Apply a new configuration, restarting subsystems as needed."""
@@ -230,7 +248,11 @@ class ShuperWhisperApp:
         self.dictionary.load()
 
         if needs_restart and self._running:
-            self.shutdown()
+            # Keep the overlay window alive — it's a persistent pywebview window
+            # managed by tray.py. Destroying it would cause webview.start() to
+            # return and exit the app.
+            old_overlay = self.overlay
+            self.shutdown(destroy_overlay=False)
             self.recorder = AudioRecorder(device=new_config.input_device)
             self.transcriber = Transcriber(
                 model_size=new_config.model_size,
@@ -242,11 +264,10 @@ class ShuperWhisperApp:
                 on_stop=self._on_record_stop,
                 mode=new_config.hotkey_mode,
             )
-            self.overlay = RecordingOverlay(
-                position=new_config.overlay_position,
-                accent_color=new_config.accent_color,
-                bg_color=new_config.bg_color,
-            )
+            # Reuse existing overlay (preserves pywebview window + HWND)
+            self.overlay = old_overlay
+            self.overlay.set_position(new_config.overlay_position)
+            self.overlay.set_colors(new_config.accent_color, new_config.bg_color)
             self.start()
 
     @property

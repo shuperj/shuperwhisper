@@ -33,6 +33,11 @@ interface PyWebViewAPI {
     phonetic: string
   ) => Promise<DictionaryEntry & { success?: boolean; error?: string }>;
   remove_word: (word: string) => Promise<boolean>;
+  update_word: (
+    old_word: string,
+    new_word: string,
+    phonetic: string
+  ) => Promise<{ success: boolean; error?: string }>;
   train_word: (
     word: string
   ) => Promise<{ success: boolean; transcribed?: string; error?: string }>;
@@ -179,6 +184,16 @@ export async function removeWord(word: string): Promise<boolean> {
   const api = getApi();
   if (!api) return false;
   return api.remove_word(word);
+}
+
+export async function updateWord(
+  oldWord: string,
+  newWord: string,
+  phonetic: string = ""
+): Promise<{ success: boolean; error?: string }> {
+  const api = getApi();
+  if (!api) throw new Error("Bridge not available");
+  return api.update_word(oldWord, newWord, phonetic);
 }
 
 export async function trainWord(

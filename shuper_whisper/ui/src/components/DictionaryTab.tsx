@@ -4,6 +4,7 @@ import {
   getDictionary,
   addWord,
   removeWord,
+  updateWord,
   trainWord,
 } from "@/lib/bridge";
 import {
@@ -14,6 +15,8 @@ import {
   Minus,
   Loader2,
   AlertCircle,
+  Pencil,
+  X,
 } from "lucide-react";
 
 interface DictionaryTabProps {
@@ -29,6 +32,9 @@ export function DictionaryTab({
   const [word, setWord] = useState("");
   const [phonetic, setPhonetic] = useState("");
   const [trainingWord, setTrainingWord] = useState<string | null>(null);
+  const [editingEntry, setEditingEntry] = useState<string | null>(null);
+  const [editWord, setEditWord] = useState("");
+  const [editPhonetic, setEditPhonetic] = useState("");
 
   const loadEntries = useCallback(async () => {
     try {
@@ -49,8 +55,7 @@ export function DictionaryTab({
     if (trainingStatus.status === "done" || trainingStatus.status === "error") {
       setTrainingWord(null);
       loadEntries();
-      // Auto-clear after a delay
-      const timer = setTimeout(clearTraining, 3000);
+      const timer = setTimeout(clearTraining, 5000);
       return () => clearTimeout(timer);
     }
   }, [trainingStatus, loadEntries, clearTraining]);
@@ -87,8 +92,40 @@ export function DictionaryTab({
     }
   };
 
+  const handleStartEdit = (entry: DictionaryEntry) => {
+    setEditingEntry(entry.word);
+    setEditWord(entry.word);
+    setEditPhonetic(entry.phonetic);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingEntry || !editWord.trim()) return;
+    try {
+      const result = await updateWord(
+        editingEntry,
+        editWord.trim(),
+        editPhonetic.trim()
+      );
+      if (result.success) {
+        setEditingEntry(null);
+        await loadEntries();
+      }
+    } catch {
+      // silent
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingEntry(null);
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleAdd();
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleSaveEdit();
+    if (e.key === "Escape") handleCancelEdit();
   };
 
   return (
@@ -99,44 +136,77 @@ export function DictionaryTab({
           className={`glass rounded-lg px-3 py-2 text-[12px] flex items-center gap-2 ${
             trainingStatus.status === "error"
               ? "border-error/30 text-error"
-              : trainingStatus.status === "done" && trainingStatus.success
+              : trainingStatus.status === "done"
                 ? "border-success/30 text-success"
-                : trainingStatus.status === "done" && !trainingStatus.success
-                  ? "border-warning/30 text-warning"
-                  : "border-accent/30 text-accent"
+                : trainingStatus.status === "round_done" &&
+                    trainingStatus.roundSuccess
+                  ? "border-success/30 text-success"
+                  : trainingStatus.status === "round_done"
+                    ? "border-accent/30 text-accent"
+                    : "border-accent/30 text-accent"
           }`}
         >
           {trainingStatus.status === "recording" && (
             <>
               <Mic size={14} className="animate-pulse-glow text-accent" />
               <span>
-                Recording &ldquo;{trainingStatus.word}&rdquo;... Speak now!
+                Round {trainingStatus.round}/{trainingStatus.totalRounds}:
+                Recording &ldquo;{trainingStatus.word}&rdquo;&hellip; Speak now!
               </span>
             </>
           )}
           {trainingStatus.status === "transcribing" && (
             <>
               <Loader2 size={14} className="animate-spin" />
-              <span>Transcribing...</span>
-            </>
-          )}
-          {trainingStatus.status === "done" && trainingStatus.success && (
-            <>
-              <Check size={14} />
               <span>
-                Trained! Got &ldquo;{trainingStatus.transcribed}&rdquo;
+                Round {trainingStatus.round}/{trainingStatus.totalRounds}:
+                Transcribing&hellip;
               </span>
             </>
           )}
-          {trainingStatus.status === "done" && !trainingStatus.success && (
+          {trainingStatus.status === "round_done" && (
             <>
-              <AlertCircle size={14} />
+              {trainingStatus.roundSuccess ? (
+                <Check size={14} className="text-success" />
+              ) : (
+                <Mic size={14} className="text-accent" />
+              )}
               <span>
-                Expected &ldquo;{trainingStatus.word}&rdquo; but got &ldquo;
-                {trainingStatus.transcribed}&rdquo;. Try adding a phonetic hint.
+                Round {trainingStatus.round}/{trainingStatus.totalRounds}:
+                Heard &ldquo;{trainingStatus.transcribed}&rdquo;
+                {trainingStatus.roundSuccess && " \u2714"}
               </span>
             </>
           )}
+          {trainingStatus.status === "done" &&
+            trainingStatus.alreadyRecognized && (
+              <>
+                <Check size={14} />
+                <span>
+                  Trained! Whisper already recognizes &ldquo;
+                  {trainingStatus.word}&rdquo;.
+                </span>
+              </>
+            )}
+          {trainingStatus.status === "done" &&
+            !trainingStatus.alreadyRecognized &&
+            trainingStatus.learnedHint && (
+              <>
+                <Check size={14} />
+                <span>
+                  Trained! Learned hint &ldquo;{trainingStatus.learnedHint}
+                  &rdquo; for &ldquo;{trainingStatus.word}&rdquo;.
+                </span>
+              </>
+            )}
+          {trainingStatus.status === "done" &&
+            !trainingStatus.alreadyRecognized &&
+            !trainingStatus.learnedHint && (
+              <>
+                <Check size={14} />
+                <span>Trained!</span>
+              </>
+            )}
           {trainingStatus.status === "error" && (
             <>
               <AlertCircle size={14} />
@@ -158,40 +228,80 @@ export function DictionaryTab({
           </div>
         ) : (
           <div className="space-y-1">
-            {entries.map((entry) => (
-              <div
-                key={entry.word}
-                className="glass rounded-lg px-3 py-2 flex items-center gap-3 group
-                           hover:bg-white/[0.06] transition-colors duration-150"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-text-primary truncate">
-                    {entry.word}
-                  </div>
-                  {entry.phonetic && (
-                    <div className="text-[11px] text-text-muted truncate">
-                      {entry.phonetic}
+            {entries.map((entry) =>
+              editingEntry === entry.word ? (
+                <div
+                  key={entry.word}
+                  className="glass rounded-lg px-3 py-2 flex items-center gap-2"
+                >
+                  <input
+                    type="text"
+                    value={editWord}
+                    onChange={(e) => setEditWord(e.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                    className="glass-input flex-1 px-2 py-1 rounded text-[13px]
+                               text-text-primary"
+                    autoFocus
+                  />
+                  <input
+                    type="text"
+                    value={editPhonetic}
+                    onChange={(e) => setEditPhonetic(e.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                    placeholder="Phonetic"
+                    className="glass-input w-[100px] px-2 py-1 rounded text-[11px]
+                               text-text-primary placeholder:text-text-muted/60"
+                  />
+                  <button
+                    onClick={handleSaveEdit}
+                    className="p-1.5 rounded-md transition-colors text-success
+                               hover:bg-success/10"
+                    title="Save"
+                  >
+                    <Check size={14} />
+                  </button>
+                  <button
+                    onClick={handleCancelEdit}
+                    className="p-1.5 rounded-md transition-colors text-text-muted
+                               hover:bg-white/10"
+                    title="Cancel"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              ) : (
+                <div
+                  key={entry.word}
+                  className="glass rounded-lg px-3 py-2 flex items-center gap-3 group
+                             hover:bg-white/[0.06] transition-colors duration-150"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[13px] text-text-primary truncate">
+                      {entry.word}
                     </div>
-                  )}
-                </div>
+                    {entry.phonetic && (
+                      <div className="text-[11px] text-text-muted truncate">
+                        {entry.phonetic}
+                      </div>
+                    )}
+                  </div>
 
-                {/* Trained status */}
-                <div className="shrink-0">
-                  {entry.trained ? (
-                    <span className="flex items-center gap-1 text-[11px] text-success">
-                      <Check size={12} />
-                      Trained
-                    </span>
-                  ) : (
-                    <span className="flex items-center gap-1 text-[11px] text-text-muted">
-                      <Minus size={12} />
-                    </span>
-                  )}
-                </div>
+                  {/* Trained status */}
+                  <div className="shrink-0">
+                    {entry.trained ? (
+                      <span className="flex items-center gap-1 text-[11px] text-success">
+                        <Check size={12} />
+                        Trained
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-[11px] text-text-muted">
+                        <Minus size={12} />
+                      </span>
+                    )}
+                  </div>
 
-                {/* Actions */}
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                  {!entry.trained && (
+                  {/* Actions */}
+                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
                     <button
                       onClick={() => handleTrain(entry.word)}
                       disabled={trainingWord !== null}
@@ -202,18 +312,28 @@ export function DictionaryTab({
                     >
                       <Mic size={14} />
                     </button>
-                  )}
-                  <button
-                    onClick={() => handleRemove(entry.word)}
-                    className="p-1.5 rounded-md transition-colors text-text-muted
-                               hover:text-error hover:bg-error/10"
-                    title="Remove"
-                  >
-                    <Trash2 size={14} />
-                  </button>
+                    <button
+                      onClick={() => handleStartEdit(entry)}
+                      disabled={trainingWord !== null}
+                      className="p-1.5 rounded-md transition-colors text-text-muted
+                                 hover:text-accent hover:bg-accent/10 disabled:opacity-40"
+                      title="Edit"
+                    >
+                      <Pencil size={14} />
+                    </button>
+                    <button
+                      onClick={() => handleRemove(entry.word)}
+                      disabled={trainingWord !== null}
+                      className="p-1.5 rounded-md transition-colors text-text-muted
+                                 hover:text-error hover:bg-error/10 disabled:opacity-40"
+                      title="Remove"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            )}
           </div>
         )}
       </div>

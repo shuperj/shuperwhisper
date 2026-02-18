@@ -167,10 +167,19 @@ class TrayController:
 
     def _setup(self, icon: pystray.Icon) -> None:
         """Called by pystray after the icon is ready. Starts the app in a background thread."""
+        print("[tray] _setup called, icon ready", flush=True)
         icon.visible = True
 
         def _start_app():
-            self.app.start()
+            try:
+                print("[tray] _start_app thread running", flush=True)
+                self.app.start()
+                print("[tray] app.start() completed", flush=True)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                print(f"[tray] ERROR: {e}", flush=True)
+                icon.title = f"ShuperWhisper - ERROR: {e}"
 
         threading.Thread(target=_start_app, daemon=True).start()
 
