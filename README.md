@@ -20,16 +20,23 @@ Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast, f
 
 ## Install
 
-### Option A: Download the release (recommended)
+### Option A: Installer (recommended)
 
-1. Download `ShuperWhisper-v1.0.0.zip` from [Releases](../../releases)
-2. Extract to a folder (e.g. `C:\Programs\ShuperWhisper\`)
-3. Run `ShuperWhisper.exe`
+1. Download `ShuperWhisper-Setup-1.0.0.exe` from [Releases](../../releases)
+2. Run the installer — it will guide you through setup
+3. Launch from the Start Menu or Desktop shortcut
 4. A gray circle appears in your system tray — ShuperWhisper is ready
+
+The installer places ShuperWhisper in Program Files, creates Start Menu and optional Desktop shortcuts, and offers a "Start with Windows" option. Uninstall via Add/Remove Programs.
 
 > **First launch** downloads the Whisper model (~150 MB for `base`). This only happens once.
 
-### Option B: Run from source
+### Option B: Portable (no install)
+
+1. Download `ShuperWhisper-v1.0.0.zip` from [Releases](../../releases)
+2. Extract to any folder and run `ShuperWhisper.exe`
+
+### Option C: Run from source
 
 ```
 git clone <this-repo>

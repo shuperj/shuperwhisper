@@ -56,7 +56,12 @@ shuper_whisper/ui/node_modules/
 shuper_whisper/ui/dist/
 shuper_whisper/ui/tsconfig.tsbuildinfo
 
+# Packaging (generated from ShuperWhisper_left.png)
+packaging/*.ico
+packaging/*.bmp
+
 # Runtime
 config.json
+dictionary.json
 *.wav
 *.mp3
