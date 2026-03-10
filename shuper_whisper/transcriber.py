@@ -1,9 +1,23 @@
 """Speech-to-text transcription using faster-whisper."""
 
+import os
+import sys
 from typing import Optional
 
 import numpy as np
 from faster_whisper import WhisperModel
+
+
+def _bundled_model_path(model_size: str) -> str | None:
+    """Return the path to a bundled model if it exists alongside the exe."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(base, "model", model_size)
+    if os.path.isdir(path) and os.path.exists(os.path.join(path, "model.bin")):
+        return path
+    return None
 
 
 class Transcriber:
@@ -23,12 +37,22 @@ class Transcriber:
         self._model: Optional[WhisperModel] = None
 
     def load_model(self) -> None:
-        """Load the Whisper model. Call once at startup."""
-        print(
-            f"Loading Whisper model: {self._model_size} ({self._device}, {self._compute_type})"
-        )
+        """Load the Whisper model. Call once at startup.
+
+        Checks for a bundled model directory first (model/<size>/), falling
+        back to the standard Hugging Face download.
+        """
+        bundled = _bundled_model_path(self._model_size)
+        model_source = bundled or self._model_size
+        if bundled:
+            print(f"Loading bundled Whisper model: {bundled}")
+        else:
+            print(
+                f"Loading Whisper model: {self._model_size} "
+                f"({self._device}, {self._compute_type})"
+            )
         self._model = WhisperModel(
-            self._model_size,
+            model_source,
             device=self._device,
             compute_type=self._compute_type,
         )
