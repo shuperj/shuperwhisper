@@ -2,9 +2,9 @@
 
 import time
 
-import keyboard
 import pyperclip
 
+from ._win32_keys import VK_C, VK_CONTROL, VK_HOME, VK_RIGHT, VK_SHIFT, VK_V, send_combo
 from .smart_text import process_text
 
 
@@ -39,15 +39,15 @@ class TextInjector:
             # Select from cursor to start of line and copy
             pyperclip.copy("")
             time.sleep(0.02)
-            keyboard.send("shift+home")
+            send_combo(VK_SHIFT, VK_HOME)
             time.sleep(0.05)
-            keyboard.send("ctrl+c")
+            send_combo(VK_CONTROL, VK_C)
             time.sleep(0.05)
 
             context = pyperclip.paste()
 
             # Deselect (move cursor back to original position)
-            keyboard.send("right")
+            send_combo(VK_RIGHT)
             time.sleep(0.02)
 
             # Restore original clipboard
@@ -83,4 +83,4 @@ class TextInjector:
 
         pyperclip.copy(text)
         time.sleep(self._paste_delay)
-        keyboard.send("ctrl+v")
+        send_combo(VK_CONTROL, VK_V)

@@ -3,6 +3,8 @@
 import threading
 from typing import Callable, Optional
 
+import numpy as np
+
 from .audio import AudioRecorder
 from .config import AppConfig, load_config
 from .dictionary import WordDictionary
@@ -109,12 +111,25 @@ class ShuperWhisperApp:
             self.overlay.hide()
             self._set_state(STATE_IDLE)
 
+    # Minimum RMS energy threshold — below this, audio is considered silence.
+    # Typical speech RMS is 0.01–0.1; ambient noise/silence is < 0.003.
+    SILENCE_RMS_THRESHOLD = 0.005
+
     def _transcribe_and_inject(self, audio, format_mode: str) -> None:
+        # Check if the audio is essentially silence before transcribing.
+        # This prevents Whisper from hallucinating dictionary words on empty input.
+        rms = float(np.sqrt(np.mean(audio ** 2)))
+        if rms < self.SILENCE_RMS_THRESHOLD:
+            print(f"Audio too quiet (RMS={rms:.4f}), skipping transcription.\n")
+            self.overlay.hide()
+            self._set_state(STATE_IDLE)
+            return
+
         # Build initial prompt and hotwords from dictionary
         initial_prompt = self.dictionary.get_initial_prompt() or None
         hotwords = self.dictionary.get_hotwords() or None
 
-        print("Transcribing...")
+        print(f"Transcribing (RMS={rms:.4f})...")
         text = self.transcriber.transcribe(
             audio,
             initial_prompt=initial_prompt,

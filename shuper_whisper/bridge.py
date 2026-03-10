@@ -1,9 +1,17 @@
 """pywebview JS API bridge — all Python↔React communication goes through here."""
 
 import json
-import keyboard
 import time
 import threading
+
+from . import autostart
+from ._win32_keys import (
+    MODIFIER_VK_MAP,
+    VK_MAP,
+    VK_TO_NAME,
+    _ALL_MODIFIER_VKS,
+    is_key_down,
+)
 
 
 class WindowAPI:
@@ -38,45 +46,55 @@ class WindowAPI:
     def capture_hotkey(self, timeout=10):
         """Capture a hotkey combination from the user.
 
+        Polls GetAsyncKeyState to detect which keys are pressed.
         Returns a string like "ctrl+shift+space" or None if timeout/cancelled.
         """
         if self._capturing:
             return None
 
         self._capturing = True
-        modifiers = set()
-        trigger_key = None
         start_time = time.time()
 
+        # Modifier VK -> canonical name
+        _mod_vk_to_name = {
+            0xA2: "ctrl", 0xA3: "ctrl",      # L/R Control
+            0xA0: "shift", 0xA1: "shift",    # L/R Shift
+            0xA4: "alt", 0xA5: "alt",        # L/R Alt (Menu)
+            0x5B: "windows", 0x5C: "windows", # L/R Win
+        }
+
         try:
+            # Wait for any previously held keys to be released first
+            time.sleep(0.2)
+
             while time.time() - start_time < timeout:
-                event = keyboard.read_event(suppress=True)
+                # Check for escape
+                if is_key_down(VK_MAP.get("esc", 0x1B)):
+                    return None
 
-                if event.event_type == 'down':
-                    key = event.name.lower()
+                # Collect currently pressed modifiers
+                modifiers = set()
+                for vk, name in _mod_vk_to_name.items():
+                    if is_key_down(vk):
+                        modifiers.add(name)
 
-                    if key in ('ctrl', 'shift', 'alt', 'windows', 'win', 'super',
-                              'left ctrl', 'right ctrl', 'left shift', 'right shift',
-                              'left alt', 'right alt', 'left windows', 'right windows'):
-                        if key in ('win', 'super', 'left windows', 'right windows'):
-                            modifiers.add('windows')
-                        elif key in ('left ctrl', 'right ctrl'):
-                            modifiers.add('ctrl')
-                        elif key in ('left shift', 'right shift'):
-                            modifiers.add('shift')
-                        elif key in ('left alt', 'right alt'):
-                            modifiers.add('alt')
-                        else:
-                            modifiers.add(key)
-                    elif key == 'esc':
-                        return None
-                    else:
-                        trigger_key = key
+                # Scan for a non-modifier trigger key
+                trigger_key = None
+                for vk, name in VK_TO_NAME.items():
+                    if vk in _ALL_MODIFIER_VKS:
+                        continue
+                    if vk == 0x1B:  # Skip escape (handled above)
+                        continue
+                    if is_key_down(vk):
+                        trigger_key = name
                         break
 
-            if trigger_key:
-                parts = sorted(list(modifiers)) + [trigger_key]
-                return '+'.join(parts)
+                if trigger_key:
+                    parts = sorted(list(modifiers)) + [trigger_key]
+                    return "+".join(parts)
+
+                time.sleep(0.05)  # 50ms polling
+
             return None
 
         except Exception as e:
@@ -156,6 +174,22 @@ class WindowAPI:
             'format_modes': {key: FORMAT_MODE_LABELS[key] for key in VALID_FORMAT_MODES},
             'overlay_positions': list(VALID_OVERLAY_POSITIONS),
         }
+
+    # ------------------------------------------------------------------
+    # Autostart
+    # ------------------------------------------------------------------
+
+    def get_autostart(self):
+        """Return whether autostart is currently enabled."""
+        return autostart.is_enabled()
+
+    def set_autostart(self, enabled):
+        """Enable or disable autostart. Returns the new state."""
+        if enabled:
+            autostart.enable()
+        else:
+            autostart.disable()
+        return autostart.is_enabled()
 
     # ------------------------------------------------------------------
     # Dictionary
