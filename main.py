@@ -8,11 +8,25 @@ Usage:
     python main.py --list-devices   Show audio input devices
 """
 
+import ctypes
 import multiprocessing
 import os
 import sys
 
 from shuper_whisper.config import load_config
+
+
+def _enable_dpi_awareness() -> None:
+    """Declare per-monitor DPI awareness so Win32 APIs return real pixels."""
+    try:
+        # Windows 10 1703+ — per-monitor v2
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            # Older fallback — system DPI aware
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 
 def _load_env() -> None:
@@ -33,6 +47,7 @@ def _load_env() -> None:
 
 def main():
     multiprocessing.freeze_support()
+    _enable_dpi_awareness()
 
     print("[main] Starting ShuperWhisper...", flush=True)
 

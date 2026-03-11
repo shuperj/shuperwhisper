@@ -93,8 +93,8 @@ class TestOverlayMultiMonitor:
 
         with patch.object(
             RecordingOverlay,
-            "_get_active_monitor_work_area",
-            return_value=(1920, 0, 1920, 1080),
+            "_get_active_monitor_info",
+            return_value=(1920, 0, 1920, 1080, 1.0),
         ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
             o._position_window()
 
@@ -114,8 +114,8 @@ class TestOverlayMultiMonitor:
 
         with patch.object(
             RecordingOverlay,
-            "_get_active_monitor_work_area",
-            return_value=(1920, 0, 2560, 1440),
+            "_get_active_monitor_info",
+            return_value=(1920, 0, 2560, 1440, 1.0),
         ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
             o._position_window()
 
@@ -136,8 +136,8 @@ class TestOverlayMultiMonitor:
         # Work area height 1040 (40px taskbar)
         with patch.object(
             RecordingOverlay,
-            "_get_active_monitor_work_area",
-            return_value=(0, 0, 1920, 1040),
+            "_get_active_monitor_info",
+            return_value=(0, 0, 1920, 1040, 1.0),
         ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
             o._position_window()
 
@@ -165,8 +165,8 @@ class TestOverlayMultiMonitor:
 
         with patch.object(
             RecordingOverlay,
-            "_get_active_monitor_work_area",
-            return_value=(0, 0, 1920, 1080),
+            "_get_active_monitor_info",
+            return_value=(0, 0, 1920, 1080, 1.0),
         ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
             o._position_window()
 

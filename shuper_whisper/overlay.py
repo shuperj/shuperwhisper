@@ -396,49 +396,70 @@ class RecordingOverlay:
             print(f"WARNING: Win32 overlay styles failed: {e}")
 
     @staticmethod
-    def _get_active_monitor_work_area() -> tuple[int, int, int, int]:
-        """Get the work area of the monitor containing the foreground window.
+    def _get_active_monitor_info() -> tuple[int, int, int, int, float]:
+        """Get work area and DPI scale of the monitor with the foreground window.
 
-        Returns (x, y, width, height) of the monitor's work area.
+        Returns (x, y, width, height, scale) where scale is the DPI factor
+        (e.g. 1.0 for 96 DPI, 1.25 for 120 DPI, 1.5 for 144 DPI).
         Falls back to the primary monitor if no foreground window exists.
         """
         user32 = ctypes.windll.user32
         MONITOR_DEFAULTTOPRIMARY = 0x00000001
 
+        hmon = None
         fg_hwnd = user32.GetForegroundWindow()
         if fg_hwnd:
             hmon = user32.MonitorFromWindow(fg_hwnd, MONITOR_DEFAULTTOPRIMARY)
+
+        work_area = (0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
+        if hmon:
             mi = _MONITORINFO()
             mi.cbSize = ctypes.sizeof(_MONITORINFO)
             if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
                 rc = mi.rcWork
-                return (rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
+                work_area = (rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
 
-        # Fallback: primary monitor
-        return (
-            0,
-            0,
-            user32.GetSystemMetrics(0),
-            user32.GetSystemMetrics(1),
-        )
+        # Query per-monitor DPI (Windows 8.1+)
+        scale = 1.0
+        if hmon:
+            try:
+                dpi_x = ctypes.c_uint()
+                dpi_y = ctypes.c_uint()
+                # MDT_EFFECTIVE_DPI = 0
+                ctypes.windll.shcore.GetDpiForMonitor(
+                    hmon, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
+                )
+                scale = dpi_x.value / 96.0
+            except Exception:
+                pass
+
+        return (*work_area, scale)
 
     def _position_window(self) -> None:
-        """Position overlay on the monitor containing the focused window."""
+        """Position overlay on the monitor containing the focused window.
+
+        Scales overlay dimensions by the monitor's DPI factor so it appears
+        the same physical size on all displays.
+        """
         if not self._hwnd:
             return
 
-        mon_x, mon_y, mon_w, mon_h = self._get_active_monitor_work_area()
+        mon_x, mon_y, mon_w, mon_h, scale = self._get_active_monitor_info()
 
-        w = self.WINDOW_W
-        h = self.WINDOW_H_TOGGLE if self._mode == "toggle" else self.WINDOW_H_HOLD
+        w = int(self.WINDOW_W * scale)
+        h_base = self.WINDOW_H_TOGGLE if self._mode == "toggle" else self.WINDOW_H_HOLD
+        h = int(h_base * scale)
         x = mon_x + (mon_w - w) // 2
 
+        margin_top = int(80 * scale)
+        margin_bottom = int(100 * scale)
+
         positions = {
-            "top_center": mon_y + 80,
+            "top_center": mon_y + margin_top,
             "center": mon_y + (mon_h - h) // 2,
-            "bottom_center": mon_y + mon_h - h - 100,
+            "bottom_center": mon_y + mon_h - h - margin_bottom,
         }
-        y = positions.get(self._position, mon_y + 80)
+        y = positions.get(self._position, mon_y + margin_top)
 
         SWP_NOACTIVATE = 0x0010
         SWP_NOZORDER = 0x0004
