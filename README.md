@@ -31,18 +31,39 @@ Requires Windows 10/11 x64.
 
 ## Development
 
+Requires Python 3.12+ and Node 18+ (the settings window is a React app).
+
 ```bash
+# Install dependencies
+pip install -e .[dev]
+
+# Build the settings UI (required — the app loads shuper_whisper/ui/dist)
+cd shuper_whisper/ui && npm install && npm run build && cd ../..
+
 # Run from source
 python main.py --console
 
 # Run tests
 pytest tests/ -x
-
-# Build exe
-python python-compiler/build.py --config compiler.toml
 ```
 
-Requires Python 3.12+. Install dependencies with `pip install -e .[dev]`.
+### Building a release
+
+1. Build the settings UI as above.
+2. Generate the packaging assets (both are gitignored):
+   ```bash
+   python packaging/convert_icon.py        # -> packaging/ShuperWhisper.ico
+   python packaging/create_wizard_images.py # -> packaging/*.bmp
+   ```
+3. Bundle with PyInstaller as a windowed **folder** build named `ShuperWhisper`,
+   including `shuper_whisper/ui/dist` as data, so the result lands in
+   `dist/ShuperWhisper/`.
+4. Compile `packaging/installer.iss` with Inno Setup 6 to produce
+   `dist/ShuperWhisper-Setup-<version>.exe`.
+
+Step 3 is driven here by a private PyInstaller wrapper that isn't part of this
+repo; any equivalent PyInstaller invocation producing `dist/ShuperWhisper/`
+works.
 
 ## Support
 
