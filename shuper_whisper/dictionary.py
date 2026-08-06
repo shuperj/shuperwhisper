@@ -39,9 +39,15 @@ class WordDictionary:
             json.dump([asdict(e) for e in self._entries], f, indent=2)
 
     def add(self, word: str, phonetic: str = "") -> DictionaryEntry:
-        """Add or update a word. Returns the entry."""
+        """Add or update a word. Returns the entry.
+
+        `trained` describes the stored phonetic hint, so replacing the hint
+        clears it. Training re-marks the word afterwards via mark_trained().
+        """
         for entry in self._entries:
             if entry.word.lower() == word.lower():
+                if entry.phonetic != phonetic:
+                    entry.trained = False
                 entry.phonetic = phonetic
                 self.save()
                 return entry
@@ -59,8 +65,12 @@ class WordDictionary:
         return False
 
     def update(self, old_word: str, new_word: str, phonetic: str = "") -> bool:
+        """Rename an entry and/or replace its hint. Editing the hint clears
+        `trained`; a rename alone leaves the trained hint intact."""
         for entry in self._entries:
             if entry.word.lower() == old_word.lower():
+                if entry.phonetic != phonetic:
+                    entry.trained = False
                 entry.word = new_word
                 entry.phonetic = phonetic
                 self.save()

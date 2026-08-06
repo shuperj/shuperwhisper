@@ -71,6 +71,50 @@ class TestDictionaryCRUD:
         assert dictionary.entries[0].trained is True
 
 
+class TestTrainedFlagOnEdit:
+    """`trained` describes the stored hint, so editing the hint clears it."""
+
+    def test_add_new_phonetic_clears_trained(self, dictionary):
+        dictionary.add("kubectl", "cube control")
+        dictionary.mark_trained("kubectl")
+        dictionary.add("kubectl", "koob c t l")
+        assert dictionary.entries[0].trained is False
+
+    def test_add_same_phonetic_keeps_trained(self, dictionary):
+        dictionary.add("kubectl", "cube control")
+        dictionary.mark_trained("kubectl")
+        dictionary.add("kubectl", "cube control")
+        assert dictionary.entries[0].trained is True
+
+    def test_add_clearing_phonetic_clears_trained(self, dictionary):
+        dictionary.add("kubectl", "cube control")
+        dictionary.mark_trained("kubectl")
+        dictionary.add("kubectl")
+        assert dictionary.entries[0].trained is False
+
+    def test_update_new_phonetic_clears_trained(self, dictionary):
+        dictionary.add("kubctl", "cube control")
+        dictionary.mark_trained("kubctl")
+        dictionary.update("kubctl", "kubectl", "koob c t l")
+        assert dictionary.entries[0].trained is False
+
+    def test_update_rename_only_keeps_trained(self, dictionary):
+        """Fixing the spelling doesn't invalidate the hint training produced."""
+        dictionary.add("kubctl", "cube control")
+        dictionary.mark_trained("kubctl")
+        dictionary.update("kubctl", "kubectl", "cube control")
+        assert dictionary.entries[0].trained is True
+
+    def test_training_sequence_still_ends_trained(self, dictionary):
+        """bridge.train_word() does add() then mark_trained() — order matters."""
+        dictionary.add("kubectl", "old hint")
+        dictionary.mark_trained("kubectl")
+        dictionary.add("kubectl", "learned hint")
+        dictionary.mark_trained("kubectl")
+        assert dictionary.entries[0].trained is True
+        assert dictionary.entries[0].phonetic == "learned hint"
+
+
 class TestDictionaryPersistence:
     def test_save_and_load(self, dict_path):
         d1 = WordDictionary(path=dict_path)
