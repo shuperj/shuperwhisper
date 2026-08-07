@@ -41,10 +41,8 @@ build.bat
 install.bat
 
 # Documentation & config (not source)
-CLAUDE.md
 AUTOSTART-GUIDE.md
 DICTATION-SETUP.md
-.claude/
 
 # Legacy / replaced files
 whisper-dictation-cpu.py
