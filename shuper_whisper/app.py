@@ -1,5 +1,7 @@
 """Main application orchestrator for ShuperWhisper."""
 
+import multiprocessing
+import sys
 import threading
 from typing import Callable, Optional
 
@@ -313,3 +315,23 @@ def list_devices() -> None:
             f"      Channels: {dev['channels']}, Sample Rate: {dev['sample_rate']} Hz"
         )
     print("\nSet input_device in config.json to the device index or name.")
+
+
+def main() -> None:
+    """Entry point for the installed ``shuper-whisper`` gui-script."""
+    multiprocessing.freeze_support()
+
+    if "--list-devices" in sys.argv:
+        list_devices()
+        sys.exit(0)
+
+    config = load_config()
+
+    if "--console" in sys.argv:
+        app = ShuperWhisperApp(config)
+        app.run()
+    else:
+        from .tray import TrayController
+
+        tray = TrayController(config)
+        tray.run()
