@@ -13,7 +13,7 @@ import multiprocessing
 import os
 import sys
 
-from shuper_whisper.config import load_config
+from shuper_whisper.config import config_dir, load_config
 
 
 def _enable_dpi_awareness() -> None:
@@ -30,8 +30,8 @@ def _enable_dpi_awareness() -> None:
 
 
 def _load_env() -> None:
-    """Load environment variables from D:/dev/.env if available."""
-    env_path = os.path.join("D:", os.sep, "dev", ".env")
+    """Load environment variables from a .env next to config.json, if present."""
+    env_path = os.path.join(config_dir(), ".env")
     if not os.path.exists(env_path):
         return
     try:

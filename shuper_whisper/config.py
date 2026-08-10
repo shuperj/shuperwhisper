@@ -23,11 +23,16 @@ def _project_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def config_dir() -> str:
+    """Return the directory config.json lives in."""
+    if _is_frozen():
+        return _appdata_dir()
+    return _project_root()
+
+
 def _default_config_path() -> str:
     """Return the path to config.json."""
-    if _is_frozen():
-        return os.path.join(_appdata_dir(), "config.json")
-    return os.path.join(_project_root(), "config.json")
+    return os.path.join(config_dir(), "config.json")
 
 
 def _default_dictionary_path() -> str:
