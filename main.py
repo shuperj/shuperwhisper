@@ -6,76 +6,15 @@ Usage:
     python main.py                  Start dictation (system tray)
     python main.py --console        Start dictation (console mode)
     python main.py --list-devices   Show audio input devices
+
+This is a thin wrapper. The real entry point lives in shuper_whisper.app:main,
+which is what pyproject's [project.gui-scripts] and the PyInstaller build run.
+Keeping the logic there means the dev path and the packaged path cannot drift
+apart -- see issue #11, where DPI awareness and .env loading lived only here
+and so were silently absent from every installed copy.
 """
 
-import ctypes
-import multiprocessing
-import os
-import sys
-
-from shuper_whisper.config import load_config
-
-
-def _enable_dpi_awareness() -> None:
-    """Declare per-monitor DPI awareness so Win32 APIs return real pixels."""
-    try:
-        # Windows 10 1703+ — per-monitor v2
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except Exception:
-        try:
-            # Older fallback — system DPI aware
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
-
-
-def _load_env() -> None:
-    """Load environment variables from D:/dev/.env if available."""
-    env_path = os.path.join("D:", os.sep, "dev", ".env")
-    if not os.path.exists(env_path):
-        return
-    try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key.strip(), value.strip())
-    except OSError:
-        pass
-
-
-def main():
-    multiprocessing.freeze_support()
-    _enable_dpi_awareness()
-
-    print("[main] Starting ShuperWhisper...", flush=True)
-
-    # Load API keys (ANTHROPIC_API_KEY, etc.) from workspace .env
-    _load_env()
-
-    if "--list-devices" in sys.argv:
-        from shuper_whisper.app import list_devices
-
-        list_devices()
-        sys.exit(0)
-
-    config = load_config()
-    print(f"[main] Config loaded: hotkey={config.hotkey}, model={config.model_size}", flush=True)
-
-    if "--console" in sys.argv:
-        from shuper_whisper.app import ShuperWhisperApp
-
-        app = ShuperWhisperApp(config)
-        app.run()
-    else:
-        from shuper_whisper.tray import TrayController
-
-        print("[main] Creating TrayController...", flush=True)
-        tray = TrayController(config)
-        print("[main] Starting tray.run()...", flush=True)
-        tray.run()
-
+from shuper_whisper.app import main
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,9 @@
-"""Main application orchestrator for ShuperWhisper."""
+"""Main application orchestrator and process entry point for ShuperWhisper."""
 
+import ctypes
+import multiprocessing
+import os
+import sys
 import threading
 from typing import Callable, Optional
 
@@ -313,3 +317,76 @@ def list_devices() -> None:
             f"      Channels: {dev['channels']}, Sample Rate: {dev['sample_rate']} Hz"
         )
     print("\nSet input_device in config.json to the device index or name.")
+
+
+def _enable_dpi_awareness() -> None:
+    """Declare per-monitor DPI awareness so Win32 APIs return real pixels.
+
+    Without this the floating recording overlay is mispositioned and blurry on
+    scaled displays.
+    """
+    try:
+        # Windows 10 1703+ -- per-monitor v2
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            # Older fallback -- system DPI aware
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def _load_env() -> None:
+    """Load environment variables from D:/dev/.env if available.
+
+    This is where ANTHROPIC_API_KEY comes from; without it the Claude
+    reformatting path silently falls back to templates.
+    """
+    env_path = os.path.join("D:", os.sep, "dev", ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+    except OSError:
+        pass
+
+
+def main() -> None:
+    """Process entry point.
+
+    This is the target of pyproject's [project.gui-scripts], so it is what the
+    installed `shuper-whisper` command and the PyInstaller build run. main.py
+    delegates here so the dev path and the packaged path cannot drift apart.
+    """
+    multiprocessing.freeze_support()
+    _enable_dpi_awareness()
+
+    print("[main] Starting ShuperWhisper...", flush=True)
+
+    # Load API keys (ANTHROPIC_API_KEY, etc.) from workspace .env
+    _load_env()
+
+    if "--list-devices" in sys.argv:
+        list_devices()
+        sys.exit(0)
+
+    config = load_config()
+    print(f"[main] Config loaded: hotkey={config.hotkey}, model={config.model_size}", flush=True)
+
+    if "--console" in sys.argv:
+        app = ShuperWhisperApp(config)
+        app.run()
+    else:
+        # Imported here, not at module scope: tray.py imports from this module,
+        # so a top-level import would be circular.
+        from .tray import TrayController
+
+        print("[main] Creating TrayController...", flush=True)
+        tray = TrayController(config)
+        print("[main] Starting tray.run()...", flush=True)
+        tray.run()
