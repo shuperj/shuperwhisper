@@ -1,4 +1,8 @@
-"""Tests for main._load_env."""
+"""Tests for _load_env, which lives in shuper_whisper.app.
+
+main.py is a thin wrapper around shuper_whisper.app:main -- the helpers moved
+into the package so the packaged entry point gets them too (issue #11).
+"""
 
 import importlib
 import os
@@ -6,7 +10,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import main as main_module  # noqa: E402
+import shuper_whisper.app as main_module  # noqa: E402
 
 
 class TestLoadEnv:

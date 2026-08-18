@@ -1,6 +1,8 @@
-"""Main application orchestrator for ShuperWhisper."""
+"""Main application orchestrator and process entry point for ShuperWhisper."""
 
+import ctypes
 import multiprocessing
+import os
 import sys
 import threading
 from typing import Callable, Optional
@@ -8,7 +10,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from .audio import AudioRecorder
-from .config import AppConfig, load_config
+from .config import AppConfig, config_dir, load_config
 from .dictionary import WordDictionary
 from .formatter import TextFormatter
 from .hotkey import HotkeyManager
@@ -317,9 +319,55 @@ def list_devices() -> None:
     print("\nSet input_device in config.json to the device index or name.")
 
 
+def _enable_dpi_awareness() -> None:
+    """Declare per-monitor DPI awareness so Win32 APIs return real pixels.
+
+    Without this the floating recording overlay is mispositioned and blurry on
+    scaled displays.
+    """
+    try:
+        # Windows 10 1703+ -- per-monitor v2
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            # Older fallback -- system DPI aware
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def _load_env() -> None:
+    """Load environment variables from a .env next to config.json, if present.
+
+    This is where ANTHROPIC_API_KEY comes from; without it the Claude
+    reformatting path silently falls back to templates.
+    """
+    env_path = os.path.join(config_dir(), ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+    except OSError:
+        pass
+
+
 def main() -> None:
-    """Entry point for the installed ``shuper-whisper`` gui-script."""
+    """Entry point for the installed ``shuper-whisper`` gui-script.
+
+    main.py delegates here, so the dev path and the packaged path cannot drift
+    apart -- DPI awareness and .env loading previously lived only in main.py
+    and so were absent from every installed copy (issue #11).
+    """
     multiprocessing.freeze_support()
+    _enable_dpi_awareness()
+
+    # Load API keys (ANTHROPIC_API_KEY, etc.) before anything reads them.
+    _load_env()
 
     if "--list-devices" in sys.argv:
         list_devices()
