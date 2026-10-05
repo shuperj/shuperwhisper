@@ -23,7 +23,7 @@ interface PyWebViewAPI {
   get_config: () => Promise<AppConfig>;
   save_config: (
     data: Partial<AppConfig>
-  ) => Promise<{ success: boolean; config: AppConfig; error?: string }>;
+  ) => Promise<{ success: boolean; config?: AppConfig; error?: string }>;
   get_config_options: () => Promise<ConfigOptions>;
 
   // Dictionary
@@ -139,7 +139,7 @@ export async function getConfig(): Promise<AppConfig> {
 
 export async function saveConfig(
   config: Partial<AppConfig>
-): Promise<{ success: boolean; config: AppConfig }> {
+): Promise<{ success: boolean; config?: AppConfig; error?: string }> {
   const api = getApi();
   if (!api) throw new Error("Bridge not available");
   return api.save_config(config);

@@ -1,25 +1,20 @@
+export interface DeviceRef {
+  name: string;
+  hostapi: string | null;
+}
+
 export interface AppConfig {
   hotkey: string;
   model_size: string;
-  input_device: number | string | null;
+  input_device: DeviceRef | null;
   language: string;
-  smart_spacing: boolean;
-  bullet_mode: boolean;
-  email_mode: boolean;
-  hotkey_mode: string;
-  format_mode: string;
-  email_tone: number;
-  prompt_detail: number;
   overlay_position: string;
-  accent_color: string;
-  bg_color: string;
+  compute: "auto" | "cpu";
 }
 
 export interface ConfigOptions {
   models: string[];
   languages: Record<string, string>;
-  hotkey_modes: string[];
-  format_modes: Record<string, string>;
   overlay_positions: string[];
 }
 
@@ -32,6 +27,10 @@ export interface DictionaryEntry {
 export interface Device {
   index: number;
   name: string;
+  hostapi: string;
+  hostapi_label: string;
+  channels: number;
+  samplerate: number;
   is_default: boolean;
 }
 

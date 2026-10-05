@@ -1,14 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useConfig } from "@/hooks/useConfig";
 import { useTraining } from "@/hooks/useTraining";
 import { TabNav } from "@/components/TabNav";
 import { GeneralTab } from "@/components/GeneralTab";
-import { FormattingTab } from "@/components/FormattingTab";
 import { DictionaryTab } from "@/components/DictionaryTab";
 import { ActionBar } from "@/components/ActionBar";
 import { closeWindow } from "@/lib/bridge";
 
-type Tab = "general" | "formatting" | "dictionary";
+type Tab = "general" | "dictionary";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("general");
@@ -20,30 +19,11 @@ export default function App() {
     isSaving,
     isDirty,
     error,
+    saveError,
     updateField,
     save,
   } = useConfig();
   const { trainingStatus, clearTraining } = useTraining();
-
-  // Apply user colors as CSS custom properties on <html> so they cascade
-  // to body::before/after ambient glows, body background, and all children.
-  useEffect(() => {
-    if (!config) return;
-    const root = document.documentElement;
-    if (config.accent_color) {
-      root.style.setProperty("--sw-accent", config.accent_color);
-      const r = Math.min(255, parseInt(config.accent_color.slice(1, 3), 16) + 17);
-      const g = Math.min(255, parseInt(config.accent_color.slice(3, 5), 16) + 17);
-      const b = Math.min(255, parseInt(config.accent_color.slice(5, 7), 16) + 17);
-      root.style.setProperty(
-        "--sw-accent-hover",
-        `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`
-      );
-    }
-    if (config.bg_color) {
-      root.style.setProperty("--sw-bg", config.bg_color);
-    }
-  }, [config?.accent_color, config?.bg_color]);
 
   if (isLoading) {
     return (
@@ -90,13 +70,6 @@ export default function App() {
             updateField={updateField}
           />
         )}
-        {activeTab === "formatting" && (
-          <FormattingTab
-            config={config}
-            options={options}
-            updateField={updateField}
-          />
-        )}
         {activeTab === "dictionary" && (
           <DictionaryTab
             trainingStatus={trainingStatus}
@@ -104,6 +77,12 @@ export default function App() {
           />
         )}
       </div>
+
+      {saveError && (
+        <div className="mx-8 mb-2 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-2 text-[12px] text-red-300">
+          {saveError}
+        </div>
+      )}
 
       <ActionBar
         onSave={handleSave}
