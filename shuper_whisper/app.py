@@ -346,6 +346,10 @@ def main() -> None:
     multiprocessing.freeze_support()
     _enable_dpi_awareness()
 
+    if "--setup-gpu" in sys.argv:
+        from .setup_window import run_setup_window
+        sys.exit(run_setup_window())
+
     if "--list-devices" in sys.argv:
         list_devices()
         sys.exit(0)

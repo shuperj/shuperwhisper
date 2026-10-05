@@ -80,3 +80,15 @@ def test_main_calls_freeze_support_first(mocker, stub_main):
     app.main()
 
     freeze.assert_called_once()
+
+
+def test_setup_gpu_flag_runs_setup_window_and_exits(mocker, stub_main):
+    run = mocker.patch("shuper_whisper.setup_window.run_setup_window", return_value=0)
+    tray = mocker.patch("shuper_whisper.tray.TrayController")
+    mocker.patch.object(sys, "argv", ["shuper-whisper", "--setup-gpu"])
+    with pytest.raises(SystemExit) as exc:
+        app.main()
+    assert exc.value.code == 0
+    run.assert_called_once()
+    tray.assert_not_called()
+    assert "config" not in stub_main
