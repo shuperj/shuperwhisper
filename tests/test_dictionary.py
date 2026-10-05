@@ -190,3 +190,11 @@ class TestDictionaryEntry:
         assert e.word == "test"
         assert e.phonetic == "hint"
         assert e.trained is True
+
+
+def test_get_replacements_maps_hint_to_word(tmp_path):
+    from shuper_whisper.dictionary import WordDictionary
+    d = WordDictionary(path=str(tmp_path / "d.json"))
+    d.add("Mackinac", "mackinaw")
+    d.add("Dana")
+    assert d.get_replacements() == [("mackinaw", "Mackinac")]
