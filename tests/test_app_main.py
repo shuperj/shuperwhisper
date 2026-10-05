@@ -35,6 +35,7 @@ def stub_main(mocker):
 
     mocker.patch.object(app, "load_config", side_effect=_load_config)
     mocker.patch.object(app.multiprocessing, "freeze_support")
+    mocker.patch.object(app, "_log_to_file_when_windowed")
     return calls
 
 
@@ -80,3 +81,26 @@ def test_main_calls_freeze_support_first(mocker, stub_main):
     app.main()
 
     freeze.assert_called_once()
+
+
+def test_setup_gpu_flag_runs_setup_window_and_exits(mocker, stub_main):
+    run = mocker.patch("shuper_whisper.setup_window.run_setup_window", return_value=0)
+    tray = mocker.patch("shuper_whisper.tray.TrayController")
+    mocker.patch.object(sys, "argv", ["shuper-whisper", "--setup-gpu"])
+    with pytest.raises(SystemExit) as exc:
+        app.main()
+    assert exc.value.code == 0
+    run.assert_called_once()
+    tray.assert_not_called()
+    assert "config" not in stub_main
+
+
+def test_windowed_output_goes_to_log(mocker, tmp_path):
+    mocker.patch.object(app, "config_dir", lambda: str(tmp_path))
+    mocker.patch.object(sys, "stdout", None)
+    mocker.patch.object(sys, "stderr", None)
+    app._log_to_file_when_windowed()
+    print("hello log")
+    sys.stdout.flush()
+    assert "hello log" in (tmp_path / "shuperwhisper.log").read_text(encoding="utf-8")
+    sys.stdout.close()

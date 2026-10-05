@@ -1,7 +1,9 @@
 """Speech-to-text transcription using faster-whisper."""
 
 import ctypes
+import functools
 import os
+import subprocess
 import sys
 from typing import Optional
 
@@ -11,6 +13,8 @@ from faster_whisper import WhisperModel
 # ctranslate2 >= 4.5 is built against CUDA 12 + cuDNN 9.
 _CUDA_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
 _added_dll_dirs: set[str] = set()
+# Written last by gpu_runtime.install(): a runtime folder without it is incomplete.
+RUNTIME_MARKER = "runtime.json"
 
 
 def _bundled_model_path(model_size: str) -> str | None:
@@ -26,11 +30,40 @@ def _bundled_model_path(model_size: str) -> str | None:
 
 
 def runtime_dir() -> str:
-    """Where the GPU runtime downloader puts the CUDA DLLs."""
+    """Where the GPU runtime downloader keeps its versioned CUDA folders.
+
+    Next to the exe when installed; a separate folder when running from
+    source, so a dev checkout never shares (or loses) the installed copy's.
+    """
     if getattr(sys, "frozen", False):
         return os.path.join(os.path.dirname(sys.executable), "cuda")
     base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
-    return os.path.join(base, "ShuperWhisper", "cuda")
+    return os.path.join(base, "ShuperWhisperDev", "cuda")
+
+
+def _complete_runtime() -> Optional[str]:
+    """Newest fully installed runtime folder (one with the marker), if any."""
+    base = runtime_dir()
+    try:
+        folders = [os.path.join(base, n) for n in os.listdir(base)]
+    except OSError:
+        return None
+    complete = [f for f in folders if os.path.isfile(os.path.join(f, RUNTIME_MARKER))]
+    return max(complete, key=os.path.getmtime) if complete else None
+
+
+@functools.lru_cache(maxsize=1)
+def gpu_name() -> Optional[str]:
+    """Name of the first NVIDIA GPU, via nvidia-smi (None if unavailable)."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        name = out.stdout.strip().splitlines()[0].strip()
+        return name or None
+    except Exception:
+        return None
 
 
 def _cuda_device_count() -> int:
@@ -44,7 +77,8 @@ def _cuda_device_count() -> int:
 def _nvidia_dll_dirs() -> list[str]:
     """The downloaded GPU runtime, plus the bin/ folders of the pip
     nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels (dev installs)."""
-    dirs = [runtime_dir()] if os.path.isdir(runtime_dir()) else []
+    runtime = _complete_runtime()
+    dirs = [runtime] if runtime else []
     roots = []
     try:
         import nvidia  # namespace package installed by the wheels
@@ -79,8 +113,21 @@ def _load_cuda_dlls() -> bool:
         return False
 
 
+def _gpu_compute_type() -> str:
+    try:
+        import ctranslate2
+        supported = ctranslate2.get_supported_compute_types("cuda")
+    except Exception:
+        return "float16"
+    return "int8_float16" if "int8_float16" in supported else "float16"
+
+
 def select_compute(preference: str = "auto") -> tuple[str, str]:
-    """("cuda", "float16") when a usable NVIDIA GPU is present, else CPU int8.
+    """("cuda", "int8_float16") when a usable NVIDIA GPU is present, else CPU int8.
+
+    int8 weights halve the VRAM (large-v3-turbo: 1.2 GB instead of 2.4 GB)
+    at the same speed and, in our tests, the same text. GPUs without int8
+    support get float16.
 
     preference="cpu" (the "Use GPU when available" setting turned off) or
     SHUPER_WHISPER_DEVICE=cpu forces CPU without probing CUDA at all.
@@ -88,7 +135,7 @@ def select_compute(preference: str = "auto") -> tuple[str, str]:
     if preference == "cpu" or os.environ.get("SHUPER_WHISPER_DEVICE", "").lower() == "cpu":
         return ("cpu", "int8")
     if _cuda_device_count() > 0 and _load_cuda_dlls():
-        return ("cuda", "float16")
+        return ("cuda", _gpu_compute_type())
     return ("cpu", "int8")
 
 

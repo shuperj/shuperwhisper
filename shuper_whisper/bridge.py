@@ -4,7 +4,13 @@ import json
 import time
 import threading
 
-from . import autostart
+from . import autostart, gpu_runtime, system_theme
+from .audio import AudioRecorder
+from .transcriber import gpu_name
+
+_MODEL_LABELS = {"large-v3-turbo": "Large v3 Turbo", "large-v3": "Large v3"}
+# One GPU download at a time, shared by every settings window.
+_gpu_setup = gpu_runtime.GpuSetup()
 from ._win32_keys import (
     MODIFIER_VK_MAP,
     VK_MAP,
@@ -25,6 +31,8 @@ class WindowAPI:
         self._window = window
         self._capturing = False
         self._app = None  # ShuperWhisperApp, set via set_app_instance()
+        self._mic_test = None
+        self._mic_lock = threading.Lock()
 
     def set_app_instance(self, app) -> None:
         """Wire the ShuperWhisperApp reference (called by TrayController)."""
@@ -36,6 +44,7 @@ class WindowAPI:
 
     def close_window(self):
         """Close the current settings window."""
+        self.stop_mic_test()
         if self._window:
             self._window.destroy()
 
@@ -127,33 +136,53 @@ class WindowAPI:
         return load_config().to_dict()
 
     def save_config(self, data):
-        """Validate, check the mic, save and apply. Returns {success, config|error}."""
+        """Validate, check the mic, apply, then save what's actually running.
+
+        ``data`` may be a partial patch; it's merged with the saved config.
+        A change that needs a model load runs in the background (seconds);
+        the page polls get_status() until the state leaves "loading", and
+        reads ``reload_error`` for anything that couldn't be applied.
+        Returns {success, config, loading?} or {success: False, error, config?}.
+        """
         from . import audio_devices
         from .config import AppConfig, load_config, save_config
 
         try:
+            current = load_config()
+            merged = {**current.to_dict(), **(data or {})}
             config = AppConfig(
-                hotkey=data.get('hotkey', 'ctrl+shift+space'),
-                model_size=data.get('model_size', 'auto'),
-                input_device=data.get('input_device'),
-                language=data.get('language', 'en'),
-                compute=data.get('compute', 'auto'),
-                live_typing=data.get('live_typing', 'auto'),
+                hotkey=merged.get('hotkey', 'ctrl+shift+space'),
+                model_size=merged.get('model_size', 'auto'),
+                input_device=merged.get('input_device'),
+                language=merged.get('language', 'en'),
+                compute=merged.get('compute', 'auto'),
+                live_typing=merged.get('live_typing', 'auto'),
             )
             config.validate()
-            if config.input_device != load_config().input_device:
+            if config.input_device != current.input_device:
                 problem = audio_devices.check(config.input_device)
                 if problem:
                     return {'success': False, 'error': f"Can't use that microphone: {problem}"}
-            # Apply first, save only what worked, so a bad setting isn't
-            # waiting to fail again on the next launch.
-            if self._app:
-                if not self._app.reload_config(config):
-                    return {'success': False, 'error': 'Finish dictating first, then try again.'}
-                if self._app.error:
-                    return {'success': False, 'error': self._app.error}
-            save_config(config)
-            return {'success': True, 'config': config.to_dict()}
+            app = self._app
+            if not app:
+                save_config(config)
+                return {'success': True, 'config': config.to_dict()}
+            if app.state == "loading":
+                return {'success': False, 'error': 'Still loading the speech model. Try again in a moment.'}
+            if app.busy:
+                return {'success': False, 'error': 'Finish dictating first, then try again.'}
+            # Decide by what's running, not by what's on disk.
+            wanted = (config.model_size, config.compute, config.live_typing)
+            if wanted != app.transcriber.requested or not app.transcriber.loaded:
+                app.reload_in_background(config, on_done=lambda ok: save_config(app.config))
+                return {'success': True, 'loading': True, 'config': config.to_dict()}
+            if not app.reload_config(config):
+                return {'success': False, 'error': 'Finish dictating first, then try again.'}
+            save_config(app.config)
+            problem = app.reload_error or app.error
+            if problem:
+                return {'success': False, 'error': problem, 'config': app.config.to_dict()}
+            return {'success': True, 'config': app.config.to_dict()}
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
@@ -164,6 +193,92 @@ class WindowAPI:
             'models': list(AppConfig.VALID_MODELS),
             'languages': SUPPORTED_LANGUAGES,
         }
+
+    # ------------------------------------------------------------------
+    # Status and system info
+    # ------------------------------------------------------------------
+
+    def get_status(self):
+        if not self._app:
+            return {'state': 'idle', 'error': None, 'reload_error': None}
+        return {'state': self._app.state, 'error': self._app.error,
+                'reload_error': self._app.reload_error}
+
+    def get_system_info(self):
+        compute = "Not loaded"
+        if self._app and self._app.transcriber.device:
+            size = self._app.transcriber.model_size
+            label = _MODEL_LABELS.get(size, size.capitalize())
+            where = (gpu_name() or "NVIDIA GPU") if self._app.transcriber.device == "cuda" else "CPU"
+            compute = f"{label} on {where}"
+        return {
+            'dark': system_theme.apps_use_dark(),
+            'accent': system_theme.accent_colors(),
+            'compute': compute,
+        }
+
+    # ------------------------------------------------------------------
+    # Mic test (level meter on the Microphone card)
+    # ------------------------------------------------------------------
+
+    def start_mic_test(self, device_ref):
+        with self._mic_lock:  # JS calls run on their own threads; a double-click mustn't leak a stream
+            self._stop_mic_test_locked()
+            if self._app and self._app.state == "loading":
+                return {'success': False, 'error': 'Still loading the speech model. Try again in a moment.'}
+            if self._app and self._app.busy:
+                return {'success': False, 'error': 'Finish dictating first, then try again.'}
+            recorder = AudioRecorder(device_ref=device_ref)
+            try:
+                recorder.start_recording()
+            except Exception as e:
+                return {'success': False, 'error': str(e)}
+            self._mic_test = recorder
+            return {'success': True}
+
+    def get_mic_level(self):
+        recorder = self._mic_test
+        if not recorder:
+            return 0.0
+        return float(recorder.get_levels(1)[-1])
+
+    def stop_mic_test(self):
+        with self._mic_lock:
+            self._stop_mic_test_locked()
+
+    def _stop_mic_test_locked(self):
+        recorder, self._mic_test = self._mic_test, None
+        if recorder:
+            try:
+                recorder.stop_recording()
+            except Exception:
+                pass
+
+    # ------------------------------------------------------------------
+    # GPU acceleration
+    # ------------------------------------------------------------------
+
+    def get_gpu_status(self):
+        return {
+            'gpu': gpu_name(),
+            'installed': gpu_runtime.installed(),
+            'active': bool(self._app and self._app.transcriber.device == 'cuda'),
+        }
+
+    def setup_gpu(self):
+        def _activate():
+            # Before "done" is reported: load the model on the GPU now, waiting
+            # out a dictation if one is running.
+            if self._app:
+                self._app.reload_config(self._app.config, force_model=True, wait=120.0)
+        _gpu_setup.start(on_installed=_activate)
+        return {'success': True}
+
+    def get_gpu_setup_progress(self):
+        return _gpu_setup.progress.to_dict()
+
+    def cancel_gpu_setup(self):
+        _gpu_setup.cancel()
 
     # ------------------------------------------------------------------
     # Autostart

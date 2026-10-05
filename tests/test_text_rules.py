@@ -202,3 +202,14 @@ class TestChunks:
 def test_chunk_starting_mid_clause_keeps_new_line_words():
     assert clean("new line of products", final=False, starts_clause=False) == "new line of products"
     assert clean("new line thanks", final=False, starts_clause=True) == "\nThanks"
+
+
+def test_leading_comma_kept_mid_clause_only():
+    assert clean(", so I am", final=False, starts_clause=False) == ", so I am"
+    assert clean(", so I am", final=False, starts_clause=True) == "so I am"
+    assert join(clean(",", final=False, starts_clause=False), "Alright") == ","
+
+
+def test_lowercase_i_is_capitalised():
+    assert clean("so i wanted to say i'm sure i've got it, said ivan in wi-fi", final=False) \
+        == "so I wanted to say I'm sure I've got it, said ivan in wi-fi"

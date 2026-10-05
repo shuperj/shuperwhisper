@@ -9,10 +9,10 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from . import audio_devices, uia
+from . import audio_devices, gpu_runtime, uia
 from ._win32_keys import MODIFIER_VK_MAP, InjectionBlocked, get_vk
 from .audio import AudioRecorder
-from .config import AppConfig, load_config, save_config
+from .config import AppConfig, config_dir, load_config, save_config
 from .dictionary import WordDictionary
 from .hotkey import HotkeyManager, parse_hotkey
 from .live_writer import LiveWriter
@@ -50,6 +50,7 @@ class _Dictation:
     def __init__(self):
         self.session: Optional[StreamingSession] = None
         self.stopping = False
+        self.field = None  # where the indicator was placed
 
 
 class ShuperWhisperApp:
@@ -62,6 +63,8 @@ class ShuperWhisperApp:
     def __init__(self, config: AppConfig):
         self.config = config
         self.error: Optional[str] = None
+        self.reload_error: Optional[str] = None  # what the last settings change couldn't apply
+        self.state = STATE_IDLE
         self._state_callback: Optional[Callable[[str], None]] = None
         self._running = False
         self._session_lock = threading.Lock()
@@ -83,6 +86,7 @@ class ShuperWhisperApp:
         self._state_callback = callback
 
     def _set_state(self, state: str, error: Optional[str] = None) -> None:
+        self.state = state
         self.error = error
         if self._state_callback:
             self._state_callback(state)
@@ -133,6 +137,7 @@ class ShuperWhisperApp:
             self.writer.begin(ignore_vks=modifiers, trigger_vk=trigger)
             self._set_state(STATE_RECORDING)
             self.overlay.show()
+            token.field = self.writer.field
             if self.transcriber.live:
                 token.session = StreamingSession(
                     transcriber=self.transcriber,
@@ -166,7 +171,9 @@ class ShuperWhisperApp:
             self._session_error = str(e)
             self._on_record_stop(token)
             return
-        self.overlay.reposition(use_uia=True)
+        if self.writer.field != token.field:  # dictation moved to another field
+            token.field = self.writer.field
+            self.overlay.reposition(use_uia=True)
 
     def _on_record_stop(self, token: Optional["_Dictation"] = None) -> None:
         """Stop the current dictation (or ``token``'s, if it's still current)."""
@@ -231,9 +238,9 @@ class ShuperWhisperApp:
     QUIET_LEVEL = 0.01
 
     def _start_level_monitoring(self, token: "_Dictation") -> None:
-        """~30 fps while ``token`` is recording: overlay levels, caret
-        tracking, dead-mic detection and the silence auto-stop."""
-        state = {"n": 0, "last_loud": time.monotonic()}
+        """~30 fps while ``token`` is recording: overlay levels, dead-mic
+        detection and the silence auto-stop."""
+        state = {"last_loud": time.monotonic()}
 
         def _update():
             if token.stopping or token is not self._current:
@@ -253,9 +260,6 @@ class ShuperWhisperApp:
                 return
             if self.overlay.is_visible:
                 self.overlay.update_levels(levels)
-                state["n"] += 1
-                if state["n"] % 5 == 0:
-                    self.overlay.reposition()
             timer = threading.Timer(0.033, _update)
             timer.daemon = True
             timer.start()
@@ -272,21 +276,25 @@ class ShuperWhisperApp:
 
     def start(self) -> None:
         """Load the model and register the hotkey. Never raises; failures
-        leave the app in STATE_ERROR with ``self.error`` set."""
+        leave the app in STATE_ERROR with ``self.error`` set. Holds the
+        session lock, so dictation and settings changes wait for it."""
         if self._running:
             return
-        self._set_state(STATE_LOADING)
-        uia.warm_up()
-        try:
-            self._migrate_device()
-            if not self.transcriber.loaded:
-                self.transcriber.load_model()
-            self.hotkey_manager.register()
-        except Exception as e:
-            self._fail(str(e))
-            return
-        self._running = True
-        self._set_state(STATE_IDLE)
+        with self._session_lock:
+            self._set_state(STATE_LOADING)
+            uia.warm_up()
+            self.overlay.start()
+            gpu_runtime.cleanup()  # old runtime versions, before CUDA loads
+            try:
+                self._migrate_device()
+                if not self.transcriber.loaded:
+                    self.transcriber.load_model()
+                self.hotkey_manager.register()
+            except Exception as e:
+                self._fail(str(e))
+                return
+            self._running = True
+            self._set_state(STATE_IDLE)
         print(f"[app] Ready. Press {self.config.hotkey} to dictate.", flush=True)
 
     def shutdown(self, destroy_overlay: bool = True) -> None:
@@ -305,47 +313,84 @@ class ShuperWhisperApp:
         """A dictation is being recorded or typed."""
         return self._session_lock.locked()
 
-    def reload_config(self, new_config: AppConfig) -> bool:
+    def reload_config(self, new_config: AppConfig, force_model: bool = False,
+                      wait: float = 0.0) -> bool:
         """Apply settings, touching only what differs from what's running.
 
-        Never raises. Returns False without changing anything while a
-        dictation is in progress.
+        Never raises. Returns False, changing nothing, if a dictation (or
+        another reload) holds the app for more than ``wait`` seconds.
+        Anything that couldn't be applied keeps its old value and is
+        described in ``self.reload_error``; ``self.config`` always describes
+        what is actually running.
         """
-        if not self._session_lock.acquire(blocking=False):
+        acquired = self._session_lock.acquire(timeout=wait) if wait else \
+            self._session_lock.acquire(blocking=False)
+        if not acquired:
             return False
         try:
-            self._apply_config(new_config)
+            self._apply_config(new_config, force_model)
         finally:
             self._session_lock.release()
         return True
 
-    def _apply_config(self, new_config: AppConfig) -> None:
-        self.config = new_config
+    def reload_in_background(self, new_config: AppConfig, force_model: bool = False,
+                             on_done: Optional[Callable[[bool], None]] = None) -> None:
+        """For slow changes (a model load): report "loading" now, apply on a
+        thread. ``on_done(applied)`` runs afterwards."""
+        self.reload_error = None
+        self._set_state(STATE_LOADING)
+
+        def _work():
+            applied = self.reload_config(new_config, force_model, wait=120.0)
+            if not applied:
+                self.reload_error = "ShuperWhisper was busy, so that wasn't applied. Try again."
+                self._set_state(STATE_IDLE if self._running else STATE_ERROR, self.error)
+            if on_done:
+                on_done(applied and not self.reload_error)
+        self._run_async(_work)
+
+    def _apply_config(self, new_config: AppConfig, force_model: bool = False) -> None:
+        applied = AppConfig(**self.config.to_dict())
+        problems: list[str] = []
         self.dictionary.load()
-        try:
-            # Compare with what's actually running, not the previous config:
-            # an earlier failed reload may have left them different.
-            if new_config.input_device != self.recorder.device_ref:
-                self.recorder = AudioRecorder(device_ref=new_config.input_device)
-            wanted = (new_config.model_size, new_config.compute, new_config.live_typing)
-            model_changed = wanted != self.transcriber.requested
-            if model_changed or not self.transcriber.loaded:
-                self._set_state(STATE_LOADING)
-                self.transcriber = Transcriber(model_size=new_config.model_size,
-                                               language=new_config.language,
-                                               compute=new_config.compute,
-                                               live_typing=new_config.live_typing)
-                self.transcriber.load_model()
-            self.transcriber.language = new_config.language
-            if new_config.hotkey != self.hotkey_manager.hotkey or not self.hotkey_manager.registered:
+
+        if new_config.input_device != self.recorder.device_ref:
+            self.recorder = AudioRecorder(device_ref=new_config.input_device)
+        applied.input_device = new_config.input_device
+
+        wanted = (new_config.model_size, new_config.compute, new_config.live_typing)
+        if force_model or wanted != self.transcriber.requested or not self.transcriber.loaded:
+            self._set_state(STATE_LOADING)
+            candidate = Transcriber(model_size=new_config.model_size, language=new_config.language,
+                                    compute=new_config.compute, live_typing=new_config.live_typing)
+            try:
+                candidate.load_model()  # the old model keeps working if this fails
+                self.transcriber = candidate
+                applied.model_size, applied.compute, applied.live_typing = wanted
+            except Exception as e:
+                problems.append(f"Couldn't load the speech model: {e}")
+        self.transcriber.language = new_config.language
+        applied.language = new_config.language
+
+        if new_config.hotkey != self.hotkey_manager.hotkey or not self.hotkey_manager.registered:
+            candidate_keys = self._make_hotkeys(new_config.hotkey)
+            try:
+                if new_config.hotkey == self.hotkey_manager.hotkey:
+                    self.hotkey_manager.unregister()  # same combo: free it first
+                candidate_keys.register()
                 self.hotkey_manager.unregister()
-                self.hotkey_manager = self._make_hotkeys(new_config.hotkey)
-                self.hotkey_manager.register()
-        except Exception as e:
-            self._fail(str(e))
-            return
-        self._running = True
-        self._set_state(STATE_IDLE)
+                self.hotkey_manager = candidate_keys
+                applied.hotkey = new_config.hotkey
+            except Exception as e:
+                problems.append(str(e))
+
+        self.config = applied
+        self.reload_error = "; ".join(problems) or None
+        if self.transcriber.loaded and self.hotkey_manager.registered:
+            self._running = True
+            self._set_state(STATE_IDLE)
+        else:
+            self._fail(self.reload_error or "ShuperWhisper isn't ready")
 
     @property
     def is_running(self) -> bool:
@@ -393,10 +438,32 @@ def _enable_dpi_awareness() -> None:
             pass
 
 
+def _log_to_file_when_windowed() -> None:
+    """The installed app has no console; keep its output in a log file next
+    to config.json so problems can be diagnosed."""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    import os
+    try:
+        os.makedirs(config_dir(), exist_ok=True)
+        path = os.path.join(config_dir(), "shuperwhisper.log")
+        if os.path.exists(path) and os.path.getsize(path) > 1_000_000:
+            os.replace(path, path + ".old")
+        log = open(path, "a", buffering=1, encoding="utf-8")
+        sys.stdout = sys.stderr = log
+    except OSError:
+        pass
+
+
 def main() -> None:
     """Entry point for the installed ``shuper-whisper`` gui-script; main.py delegates here (issue #11)."""
     multiprocessing.freeze_support()
+    _log_to_file_when_windowed()
     _enable_dpi_awareness()
+
+    if "--setup-gpu" in sys.argv:
+        from .setup_window import run_setup_window
+        sys.exit(run_setup_window())
 
     if "--list-devices" in sys.argv:
         list_devices()

@@ -131,3 +131,11 @@ class TestSaveLoad:
 
     def test_missing_file_gives_defaults(self, tmp_path):
         assert load_config(str(tmp_path / "nope.json")).model_size == "auto"
+
+
+def test_dropped_model_sizes_fall_back_to_auto():
+    from shuper_whisper.config import AppConfig
+    for size in ("medium", "large-v3"):
+        config = AppConfig(model_size=size)
+        config.validate()
+        assert config.model_size == "auto"

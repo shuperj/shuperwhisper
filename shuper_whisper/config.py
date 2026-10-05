@@ -105,7 +105,9 @@ class AppConfig:
     compute: str = "auto"
     live_typing: str = "auto"
 
-    VALID_MODELS = ("auto", "tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
+    # The sizes worth offering, by benchmarks/results/*-full.md: medium and
+    # large-v3 are bigger than large-v3-turbo without being better for this.
+    VALID_MODELS = ("auto", "large-v3-turbo", "small", "base", "tiny")
 
     def validate(self) -> None:
         if self.model_size not in self.VALID_MODELS:

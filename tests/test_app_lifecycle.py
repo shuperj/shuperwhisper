@@ -86,6 +86,8 @@ class FakeIndicator:
 
 
 class FakeWriter:
+    field = None
+
     def __init__(self, **kw):
         self.updates = []
         self.blocked = False
@@ -131,6 +133,7 @@ def make_app(monkeypatch, tmp_path):
     monkeypatch.setattr(app_mod.audio_devices, "migrate", lambda v: v)
     monkeypatch.setattr(app_mod, "save_config", lambda c: None)
     monkeypatch.setattr(app_mod.uia, "warm_up", lambda: None)
+    monkeypatch.setattr(app_mod.gpu_runtime, "cleanup", lambda: None)
     FakeSession.script = []
 
     def _make(**cfg):
@@ -221,17 +224,40 @@ def test_reload_refused_while_dictating(make_app):
     assert not a.busy and a.states[-1] == "idle"
 
 
-def test_hotkey_applied_after_earlier_failed_reload(make_app, monkeypatch):
+def test_failed_model_load_keeps_old_model_and_applies_the_rest(make_app, monkeypatch):
     a = make_app()
     a.start()
+    old = a.transcriber
     monkeypatch.setattr(FakeTranscriber, "load_model",
                         lambda self: (_ for _ in ()).throw(RuntimeError("offline")))
     a.reload_config(AppConfig(hotkey="f9", model_size="small"))
-    assert a.states[-1] == "error" and a.hotkey_manager.hotkey == "ctrl+shift+space"
+    assert a.transcriber is old and "offline" in a.reload_error
+    assert a.config.model_size == "auto" and a.config.hotkey == "f9"
+    assert a.hotkey_manager.hotkey == "f9" and a.states[-1] == "idle"
     monkeypatch.setattr(FakeTranscriber, "load_model", lambda self: setattr(self, "loaded", True))
     a.reload_config(AppConfig(hotkey="f9", model_size="small"))
-    assert a.hotkey_manager.hotkey == "f9" and a.states[-1] == "idle"
+    assert a.config.model_size == "small" and a.reload_error is None
 
+
+def test_background_reload_reports_loading_then_applies(make_app):
+    a = make_app()
+    a.start()
+    done = []
+    a.reload_in_background(AppConfig(model_size="small"), on_done=done.append)
+    assert done == [True] and a.config.model_size == "small"
+    assert a.states[-3:] == ["loading", "loading", "idle"]
+
+
+def test_background_reload_waits_out_a_short_dictation(make_app):
+    import threading
+    a = make_app()
+    a.start()
+    a._run_async = lambda fn, *args: threading.Thread(target=fn, args=args).start()
+    a._session_lock.acquire()
+    done = threading.Event()
+    a.reload_in_background(AppConfig(model_size="small"), on_done=lambda ok: done.set())
+    threading.Timer(0.2, a._session_lock.release).start()
+    assert done.wait(5) and a.config.model_size == "small"
 
 def test_legacy_device_index_migrated_on_start(make_app, monkeypatch):
     saved = []
@@ -327,6 +353,19 @@ def test_is_silent_uses_loudest_window():
     assert app_mod.is_silent(np.full(16000, 0.001, np.float32)) is True
     assert app_mod.is_silent(None) is True
 
+
+def test_force_model_reload(make_app):
+    a = make_app()
+    a.start()
+    t = a.transcriber
+    a.reload_config(a.config, force_model=True)
+    assert a.transcriber is not t
+
+
+def test_state_tracked(make_app):
+    a = make_app()
+    a.start()
+    assert a.state == "idle"
 
 def test_late_stop_after_session_ended_is_ignored(make_app):
     a = make_app()

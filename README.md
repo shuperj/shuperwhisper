@@ -15,7 +15,7 @@ Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast lo
 - **Clean output:** single spaces, no em-dashes, and fillers like "um" and "uh" are dropped. Spacing and capitalisation follow what's already before your cursor.
 - **Custom dictionary:** add names and jargon. If ShuperWhisper keeps mishearing a word, put what it hears in the hint and it's swapped automatically.
 - **Any microphone,** including Voicemeeter buses and other virtual devices. Devices are remembered by name, so they survive restarts.
-- **NVIDIA GPU** is used automatically when present (`large-v3-turbo` model), with a CPU fallback (`small` model). Settings can force the CPU.
+- **NVIDIA GPU** is used automatically once its libraries are set up (`large-v3-turbo` model), with a CPU fallback (`small` model). Settings can force the CPU. Intel/AMD integrated graphics aren't used; on those PCs it runs on the processor.
 
 ## Installation
 
@@ -52,21 +52,19 @@ pytest tests/ -x
 
 ### Building a release
 
-1. Build the settings UI as above.
-2. Generate the packaging assets (both are gitignored):
-   ```bash
-   python packaging/convert_icon.py        # -> packaging/ShuperWhisper.ico
-   python packaging/create_wizard_images.py # -> packaging/*.bmp
-   ```
-3. Bundle with PyInstaller as a windowed **folder** build named `ShuperWhisper`,
-   including `shuper_whisper/ui/dist` as data, so the result lands in
-   `dist/ShuperWhisper/`.
-4. Compile `packaging/installer.iss` with Inno Setup 6 to produce
-   `dist/ShuperWhisper-Setup-<version>.exe`.
+```bash
+pip install -e .[dev]
+python packaging/build.py      # settings UI, icons, then PyInstaller -> dist/ShuperWhisper/
+```
 
-Step 3 is driven here by a private PyInstaller wrapper that isn't part of this
-repo; any equivalent PyInstaller invocation producing `dist/ShuperWhisper/`
-works.
+Then compile `packaging/installer.iss` with [Inno Setup 6](https://jrsoftware.org/isinfo.php) to get
+`dist/ShuperWhisper-Setup-<version>.exe`.
+
+The installer stays small: NVIDIA's CUDA libraries are not bundled. When the
+installer finds an NVIDIA graphics card it offers a ticked "Set up GPU
+acceleration" option, which runs `ShuperWhisper.exe --setup-gpu` to download
+them (about 1.2 GB, pinned versions from PyPI with checksums). Settings ->
+Processing has the same button for later.
 
 ## Support
 

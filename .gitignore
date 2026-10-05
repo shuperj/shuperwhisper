@@ -66,3 +66,7 @@ config.json
 dictionary.json
 *.wav
 *.mp3
+
+# Benchmarks
+benchmarks/.audio/
+benchmarks/results/raw/

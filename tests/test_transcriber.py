@@ -93,10 +93,15 @@ def test_cuda_load_failure_falls_back_to_cpu(monkeypatch):
     assert t.device == "cpu" and t.model_size == "small"
 
 
-def test_runtime_dir_is_searched(monkeypatch, tmp_path):
-    (tmp_path / "cuda").mkdir()
+def test_only_complete_runtime_folders_are_searched(monkeypatch, tmp_path):
+    complete = tmp_path / "cuda" / "cublas-1_cudnn-1"
+    complete.mkdir(parents=True)
+    (complete / tr.RUNTIME_MARKER).write_text("{}")
+    (tmp_path / "cuda" / "cublas-2_cudnn-2.partial").mkdir()
     monkeypatch.setattr(tr, "runtime_dir", lambda: str(tmp_path / "cuda"))
-    assert str(tmp_path / "cuda") in tr._nvidia_dll_dirs()
+    dirs = tr._nvidia_dll_dirs()
+    assert str(complete) in dirs
+    assert not any(d.endswith(".partial") for d in dirs)
 
 
 def test_select_compute_env_override(monkeypatch):
@@ -115,7 +120,17 @@ def test_select_compute_uses_gpu_when_available(monkeypatch):
     monkeypatch.delenv("SHUPER_WHISPER_DEVICE", raising=False)
     monkeypatch.setattr(tr, "_cuda_device_count", lambda: 1)
     monkeypatch.setattr(tr, "_load_cuda_dlls", lambda: True)
-    assert tr.select_compute() == ("cuda", "float16")
+    monkeypatch.setattr(tr, "_gpu_compute_type", lambda: "int8_float16")
+    assert tr.select_compute() == ("cuda", "int8_float16")
+
+
+def test_gpu_compute_type_falls_back_to_float16(monkeypatch):
+    import ctranslate2
+    monkeypatch.setattr(ctranslate2, "get_supported_compute_types", lambda device: {"float16", "float32"})
+    assert tr._gpu_compute_type() == "float16"
+    monkeypatch.setattr(ctranslate2, "get_supported_compute_types",
+                        lambda device: {"float16", "int8_float16", "int8"})
+    assert tr._gpu_compute_type() == "int8_float16"
 
 
 def test_cuda_failure_during_transcribe_retries_on_cpu(monkeypatch):

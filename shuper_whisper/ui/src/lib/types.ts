@@ -33,6 +33,38 @@ export interface Device {
   is_default: boolean;
 }
 
+export interface SystemInfo {
+  dark: boolean;
+  accent: { light: string; dark: string };
+  compute: string;
+}
+
+export interface AppStatus {
+  state: "idle" | "recording" | "processing" | "loading" | "error";
+  error: string | null;
+  /** What the last settings change couldn't apply (it kept its old value). */
+  reload_error: string | null;
+}
+
+export interface GpuStatus {
+  gpu: string | null;
+  installed: boolean;
+  active: boolean;
+}
+
+export interface GpuSetupProgress {
+  state: "idle" | "downloading" | "extracting" | "activating" | "done" | "error" | "cancelled";
+  fraction: number;
+  message: string;
+}
+
+export interface SaveResult {
+  success: boolean;
+  config?: AppConfig;
+  loading?: boolean;
+  error?: string;
+}
+
 export interface TrainingStatus {
   status: "recording" | "transcribing" | "round_done" | "done" | "error";
   word: string;

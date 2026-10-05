@@ -112,7 +112,7 @@ def _ellipsis(match: re.Match) -> str:
     return " " if following.islower() else ". "
 
 
-def _tidy(text: str, final: bool = True) -> str:
+def _tidy(text: str, final: bool = True, starts_clause: bool = True) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     # "word ," -> "word," but leave ".NET" and ".5" alone.
@@ -120,9 +120,14 @@ def _tidy(text: str, final: bool = True) -> str:
     text = re.sub(r",(?:\s*,)+", ",", text)
     text = re.sub(r",\s*([.;:!?])", r"\1", text)
     text = re.sub(r"([.;:!?]),", r"\1", text)
-    text = re.sub(r"^[ ,]+", "", text)
+    # A leading comma only belongs mid-clause ("Alright" + ", so").
+    text = re.sub(r"^[ ,]+" if starts_clause else r"^ +", "", text)
     text = re.sub(r"[ ,]+$", "", text) if final else text.rstrip(" ")
     return text
+
+
+# Whisper sometimes slips into lowercase mid-dictation ("i wanted").
+_LOWER_I_RE = re.compile(r"(?<![\w'])i(?=(?:'(?:m|ve|ll|d))?(?![\w']))")
 
 
 def _capitalise_after_commands(text: str) -> str:
@@ -146,8 +151,8 @@ def clean(text: str, replacements: Iterable[tuple[str, str]] = (), final: bool =
     text = _DASH_RE.sub(", ", text)
     text = _TRAILING_ELLIPSIS_RE.sub("", text)
     text = _ELLIPSIS_RE.sub(_ellipsis, text)
-    text = _tidy(text, final)
-    return _capitalise_after_commands(text)
+    text = _tidy(text, final, starts_clause)
+    return _LOWER_I_RE.sub("I", _capitalise_after_commands(text))
 
 
 def _capitalise(text: str) -> str:

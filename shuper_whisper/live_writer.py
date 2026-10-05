@@ -133,6 +133,11 @@ class LiveWriter:
         if self._monitor:
             self._monitor.clear()
 
+    @property
+    def field(self):
+        """Identity of the field currently being typed into."""
+        return self._field
+
     def _context(self) -> Optional[str]:
         if self._before is None and not self._committed:
             return None
