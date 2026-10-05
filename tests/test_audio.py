@@ -72,6 +72,8 @@ class TestOpen:
         assert kw["extra_settings"] is not None
 
     def test_non_wasapi_failure_raises(self, device_info, monkeypatch):
+        from shuper_whisper import audio_devices
+        monkeypatch.setattr(audio_devices, "refresh", lambda: False)  # can't rescan
         monkeypatch.setattr(audio_mod.sd, "query_hostapis", lambda i=None: {"name": "MME"})
         r = make([], fail_first=True)
         with pytest.raises(sd.PortAudioError):
@@ -81,7 +83,7 @@ class TestOpen:
     def test_missing_device_rescans_once(self, device_info, monkeypatch):
         from shuper_whisper import audio_devices
         refreshed = []
-        monkeypatch.setattr(audio_devices, "refresh", lambda: refreshed.append(True))
+        monkeypatch.setattr(audio_devices, "refresh", lambda: refreshed.append(True) or True)
         attempts = {"n": 0}
 
         def resolver(ref):
@@ -133,6 +135,31 @@ class TestCapture:
         assert len(r.read_new()) == 0
         streams[0].feed(sine(48000, 0.3))
         assert len(r.read_new()) > 0
+
+    def test_open_failure_rescans_and_retries(self, device_info, monkeypatch):
+        from shuper_whisper import audio_devices
+        monkeypatch.setattr(audio_devices, "refresh", lambda: True)
+        monkeypatch.setattr(audio_mod.sd, "query_hostapis", lambda i=None: {"name": "MME"})
+        streams = []
+        r = make(streams, fail_first=True)
+        r.start_recording()
+        assert r.is_recording
+
+    def test_stream_counter_tracks_open_streams(self, device_info):
+        from shuper_whisper import audio_devices
+        before = audio_devices._open_streams
+        r = make([])
+        r.start_recording()
+        assert audio_devices._open_streams == before + 1
+        r.stop_recording()
+        assert audio_devices._open_streams == before
+
+    def test_stall_detected(self, device_info):
+        r = make([])
+        r.start_recording()
+        assert r.check_alive() is None
+        r._last_callback -= 5
+        assert "stopped" in r.check_alive()
 
     def test_unexpected_stream_end_sets_error(self, device_info):
         streams = []

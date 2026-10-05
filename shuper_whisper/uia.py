@@ -7,8 +7,10 @@ returns None when the answer is unknown.
 
 import ctypes
 import ctypes.wintypes as wt
+import queue
+import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeout
 
 _CONTEXT_CHARS = 200
@@ -23,18 +25,54 @@ _user32.SendMessageTimeoutW.argtypes = (wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM, 
                                         ctypes.POINTER(ctypes.c_size_t))
 _user32.GetWindowThreadProcessId.argtypes = (wt.HWND, ctypes.c_void_p)
 _user32.GetForegroundWindow.restype = wt.HWND
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="uia")
 _local = threading.local()
+_reported: set[str] = set()
+
+
+class _Worker:
+    """One daemon thread for all UIA calls (UIA objects are tied to the
+    thread that made them). Daemon, so a hung call can't delay Quit."""
+
+    def __init__(self):
+        self._jobs: "queue.Queue[tuple]" = queue.Queue()
+        self._thread = None
+        self._lock = threading.Lock()
+
+    def submit(self, fn) -> Future:
+        with self._lock:
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._loop, daemon=True, name="uia")
+                self._thread.start()
+        future: Future = Future()
+        self._jobs.put((fn, future))
+        return future
+
+    def _loop(self) -> None:
+        while True:
+            fn, future = self._jobs.get()
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(fn())
+            except BaseException as e:
+                future.set_exception(e)
+
+
+_executor = _Worker()
 
 
 def _client():
     if getattr(_local, "uia", None) is None:
+        # comtypes initialises COM on the importing thread from this flag; UIA
+        # clients want a multithreaded apartment (no message pump needed).
+        if "comtypes" not in sys.modules:
+            sys.coinit_flags = 0  # COINIT_MULTITHREADED
         import comtypes
         import comtypes.client
         try:
             comtypes.CoInitializeEx(comtypes.COINIT_MULTITHREADED)
         except OSError:
-            pass  # importing comtypes already initialised COM on this thread
+            pass  # already initialised on this thread
         comtypes.client.GetModule("UIAutomationCore.dll")
         from comtypes.gen import UIAutomationClient as mod
         _local.mod = mod
@@ -77,8 +115,18 @@ def _run(fn, timeout: float):
         return _executor.submit(fn).result(timeout=timeout)
     except FutureTimeout:
         return None
-    except Exception:
+    except Exception as e:
+        key = f"{fn.__name__}: {type(e).__name__}"
+        if key not in _reported:  # log each kind of failure once
+            _reported.add(key)
+            print(f"[uia] {key}: {e}", flush=True)
         return None
+
+
+def warm_up() -> None:
+    """Create the UIA client now: generating the comtypes wrapper takes
+    longer than a dictation-time timeout allows."""
+    _executor.submit(_client)
 
 
 class _GUITHREADINFO(ctypes.Structure):

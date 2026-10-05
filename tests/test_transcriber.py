@@ -116,3 +116,20 @@ def test_select_compute_uses_gpu_when_available(monkeypatch):
     monkeypatch.setattr(tr, "_cuda_device_count", lambda: 1)
     monkeypatch.setattr(tr, "_load_cuda_dlls", lambda: True)
     assert tr.select_compute() == ("cuda", "float16")
+
+
+def test_cuda_failure_during_transcribe_retries_on_cpu(monkeypatch):
+    class Broken:
+        def transcribe(self, audio, **kwargs):
+            raise RuntimeError("CUDA failed with error out of memory")
+    monkeypatch.setattr(tr, "WhisperModel", lambda *a, **k: FakeModel([" Hello."]))
+    monkeypatch.setattr(tr, "_bundled_model_path", lambda size: None)
+    t = tr.Transcriber(model_size="auto", device="cuda", compute_type="float16")
+    t._model = Broken()
+    assert t.transcribe(np.zeros(16000, np.float32)) == "Hello."
+    assert t.device == "cpu" and t.model_size == "small"
+
+
+def test_requested_reports_configuration():
+    t = tr.Transcriber(model_size="auto", compute="cpu")
+    assert t.requested == ("auto", "cpu")

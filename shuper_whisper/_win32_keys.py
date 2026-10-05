@@ -148,6 +148,7 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_UNICODE = 0x0004
 VK_BACK = 0x08
 VK_RETURN = 0x0D
+VK_LSHIFT = 0xA0
 # Stamped into dwExtraInfo so our own keystrokes can be told apart from the user's.
 SHUPER_INPUT_TAG = 0x53575057
 
@@ -198,7 +199,10 @@ def text_to_inputs(text: str, backspaces: int = 0) -> list[INPUT]:
         if ch == "\r":
             continue
         if ch == "\n":
-            events += [_key(vk=VK_RETURN), _key(vk=VK_RETURN, flags=KEYEVENTF_KEYUP)]
+            # Shift+Enter: a line break everywhere, and in chat apps it doesn't send.
+            events += [_key(vk=VK_LSHIFT), _key(vk=VK_RETURN),
+                       _key(vk=VK_RETURN, flags=KEYEVENTF_KEYUP),
+                       _key(vk=VK_LSHIFT, flags=KEYEVENTF_KEYUP)]
             continue
         data = ch.encode("utf-16-le")
         for i in range(0, len(data), 2):

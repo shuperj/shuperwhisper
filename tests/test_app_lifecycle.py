@@ -24,10 +24,14 @@ class FakeRecorder:
     def get_levels(self, n):
         return [0.0] * n
 
+    def check_alive(self):
+        return self.stream_error
+
 
 class FakeTranscriber:
     def __init__(self, model_size="auto", language="en", compute="auto", fail=False):
         self.compute = compute
+        self.requested = (model_size, compute)
         self.fail = fail
         self.loaded = False
         self.language = language
@@ -44,6 +48,7 @@ class FakeTranscriber:
 
 class FakeHotkeys:
     def __init__(self, hotkey_str, on_start, on_stop):
+        self.hotkey = hotkey_str
         self.registered = False
         self.resets = 0
 
@@ -82,6 +87,7 @@ def make_app(monkeypatch, tmp_path):
     monkeypatch.setattr(app_mod, "RecordingOverlay", lambda **k: FakeOverlay())
     monkeypatch.setattr(app_mod.audio_devices, "migrate", lambda v: v)
     monkeypatch.setattr(app_mod, "save_config", lambda c: None)
+    monkeypatch.setattr(app_mod.uia, "warm_up", lambda: None)
 
     def _make(**cfg):
         a = app_mod.ShuperWhisperApp(AppConfig(**cfg))
@@ -180,3 +186,45 @@ def test_legacy_device_index_migrated_on_start(make_app, monkeypatch):
     assert a.config.input_device == {"name": "B1", "hostapi": "Windows WASAPI"}
     assert a.recorder.device_ref == a.config.input_device
     assert saved
+
+
+def test_reload_refused_while_dictating(make_app):
+    a = make_app()
+    a.start()
+    a._on_record_start()
+    recorder = a.recorder
+    assert a.reload_config(AppConfig(hotkey="f9", input_device={"name": "X", "hostapi": None})) is False
+    assert a.recorder is recorder and a.hotkey_manager.hotkey == "ctrl+shift+space"
+    a._on_record_stop()
+    assert not a.busy and a.states[-1] == "idle"
+
+
+def test_hotkey_applied_after_earlier_failed_reload(make_app, monkeypatch):
+    a = make_app()
+    a.start()
+    monkeypatch.setattr(FakeTranscriber, "load_model", lambda self: (_ for _ in ()).throw(RuntimeError("offline")))
+    a.reload_config(AppConfig(hotkey="f9", model_size="small"))
+    assert a.states[-1] == "error" and a.hotkey_manager.hotkey == "ctrl+shift+space"
+    monkeypatch.setattr(FakeTranscriber, "load_model", lambda self: setattr(self, "loaded", True))
+    a.reload_config(AppConfig(hotkey="f9", model_size="small"))
+    assert a.hotkey_manager.hotkey == "f9" and a.states[-1] == "idle"
+
+
+def test_dead_microphone_ends_session(make_app):
+    a = make_app()
+    a.start()
+    a.overlay.is_visible = True
+    a._on_record_start()
+    a.recorder.stream_error = "The microphone stopped sending audio"
+    a._start_level_monitoring()
+    assert a.hotkey_manager.resets == 1
+    assert a.states[-1] == "error" and "stopped" in a.error
+    assert not a.busy
+
+
+def test_is_silent_uses_loudest_window():
+    quiet_then_word = np.zeros(16000 * 20, np.float32)
+    quiet_then_word[16000:17600] = 0.05   # 100 ms of speech in 20 s
+    assert app_mod.is_silent(quiet_then_word) is False
+    assert app_mod.is_silent(np.full(16000, 0.001, np.float32)) is True
+    assert app_mod.is_silent(None) is True

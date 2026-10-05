@@ -15,6 +15,12 @@ class TestWhitespace:
     def test_no_space_before_punctuation(self):
         assert clean("Hello , world .") == "Hello, world."
 
+    def test_leading_dot_tokens_kept(self):
+        assert clean("I use .NET daily and the .exe file is .5 MB") ==             "I use .NET daily and the .exe file is .5 MB"
+
+    def test_abbreviations_not_capitalised(self):
+        assert clean("Meet at 3 p.m. today, e.g. here.") == "Meet at 3 p.m. today, e.g. here."
+
 
 class TestDashes:
     @pytest.mark.parametrize("raw", [
@@ -64,6 +70,13 @@ class TestFillers:
     def test_does_not_eat_words_containing_fillers(self):
         assert clean("The umbrella is human.") == "The umbrella is human."
 
+    def test_filler_before_full_stop_keeps_it(self):
+        assert clean("Sounds good um. See you") == "Sounds good. See you"
+        assert clean("I said um.") == "I said."
+
+    def test_hyphenated_uh_kept(self):
+        assert clean("The Uh-60 helicopter") == "The Uh-60 helicopter"
+
 
 class TestCommands:
     def test_period(self):
@@ -78,8 +91,23 @@ class TestCommands:
     def test_exclamation(self):
         assert clean("great exclamation point") == "great!"
 
-    def test_colon(self):
-        assert clean("note colon buy milk") == "note: buy milk"
+    def test_colon_at_end(self):
+        assert clean("shopping list colon") == "shopping list:"
+
+    def test_colon_word_kept(self):
+        assert clean("the colon operator") == "the colon operator"
+
+    def test_period_word_kept(self):
+        assert clean("The trial period lasts a month.") == "The trial period lasts a month."
+
+    def test_period_before_whisper_punctuation(self):
+        assert clean("send it today period. thanks") == "send it today. Thanks"
+
+    def test_new_line_word_kept(self):
+        assert clean("We launched a new line of products.") == "We launched a new line of products."
+
+    def test_new_line_at_end(self):
+        assert clean("Thanks, new line") == "Thanks,\n"
 
     def test_whisper_punctuated_command(self):
         assert clean("Send it today, period.") == "Send it today."
@@ -91,7 +119,7 @@ class TestCommands:
         assert clean("First point. New paragraph. Second point.") == "First point.\n\nSecond point."
 
     def test_capitalises_after_command_period(self):
-        assert clean("done period next one") == "done. Next one"
+        assert clean("done period. next one") == "done. Next one"
 
 
 class TestReplacements:
@@ -106,6 +134,9 @@ class TestReplacements:
 
     def test_identity_pairs_ignored(self):
         assert clean("Dana", [("dana", "Dana")]) == "Dana"
+
+    def test_common_words_never_replaced(self):
+        assert clean("Thank you, see you.", [("you", "Kubernetes"), ("thank you", "Mackinac")]) ==             "Thank you, see you."
 
 
 class TestJoin:
