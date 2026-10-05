@@ -228,7 +228,12 @@ class StreamingSession:
     AUTO_STOP = 30.0
     PROMPT_CHARS = 200
     CAP_KEEP = 1.0       # at the cap, commit only words ending a second before the end
-    CARRY_SECONDS = 1.5  # audio of the last committed words carried into the next utterance
+    # Audio carried into the next utterance: back to the start of the
+    # sentence in progress, if it began at most this long ago. Whisper reads
+    # a buffer that starts mid-sentence (and a prompt that ends mid-sentence)
+    # as unpunctuated text and drops every full stop after it.
+    SENTENCE_CARRY_SECONDS = 8.0
+    CARRY_SECONDS = 1.5  # otherwise just the last few words
     CARRY_WORDS = 4
     JOIN_GAP = 0.25      # silence left between carried words and new speech
     # VAD pads speech and word timestamps run early: speech has to end this
@@ -293,6 +298,10 @@ class StreamingSession:
         # Only words whose audio has left the buffer: Whisper skips audio that
         # the prompt already covers, which shifted every later word.
         done = self._committed[:len(self._committed) - self._agreement.stable_count]
+        # And only finished sentences: given an unpunctuated fragment ("I
+        # think we should"), Whisper carries on without any punctuation.
+        while done and not _sentence_end(done[-1]):
+            done = done[:-1]
         parts = [self._prompt_fn() or "", " ".join(done)[-self.PROMPT_CHARS:]]
         return " ".join(p for p in parts if p) or None
 
@@ -340,12 +349,14 @@ class StreamingSession:
             self._carry_end = 0
             return
         end_t = timed[keep - 1][1]
-        k = 1
-        while k < min(self.CARRY_WORDS, keep):
-            earlier = timed[keep - k - 2][1] if keep - k - 2 >= 0 else 0.0
-            if end_t - earlier > self.CARRY_SECONDS:
-                break
-            k += 1
+        k = self._sentence_carry(timed, keep)
+        if not k:
+            k = 1
+            while k < min(self.CARRY_WORDS, keep):
+                earlier = timed[keep - k - 2][1] if keep - k - 2 >= 0 else 0.0
+                if end_t - earlier > self.CARRY_SECONDS:
+                    break
+                k += 1
         start_t = timed[keep - k - 1][1] if keep - k - 1 >= 0 else 0.0
         self._agreement.seed(self._agreement.stable_words[-k:])
         self._carried, self._carry_misses = k, 0
@@ -353,6 +364,21 @@ class StreamingSession:
         self._buffer = self._buffer[start:]
         self._carry_end = max(0, int(end_t * SAMPLE_RATE) - start)
         self._gap_closed = False
+
+    def _sentence_carry(self, timed: list, keep: int) -> int:
+        """How many of the first ``keep`` words make up the sentence in
+        progress (0 if it began too long ago to carry)."""
+        end_t = timed[keep - 1][1]
+        for i in range(keep - 1, -1, -1):
+            if i:
+                starts = bool(_sentence_end(timed[i - 1][0]))
+            else:  # the buffer's first word: did the text before it end a sentence?
+                before = self._committed[:len(self._committed) - self._agreement.stable_count]
+                starts = not before or bool(_sentence_end(before[-1]))
+            if starts:
+                begun = timed[i - 1][1] if i else 0.0
+                return keep - i if end_t - begun <= self.SENTENCE_CARRY_SECONDS else 0
+        return 0
 
     def _decode_new(self, beam_size: int = 1, timestamps: bool = False, patient: bool = False):
         """Decode speech that follows carried words. If Whisper misheard them

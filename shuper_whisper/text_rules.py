@@ -126,6 +126,10 @@ def _tidy(text: str, final: bool = True, starts_clause: bool = True) -> str:
     return text
 
 
+# Whisper sometimes slips into lowercase mid-dictation ("i wanted").
+_LOWER_I_RE = re.compile(r"(?<![\w'])i(?=(?:'(?:m|ve|ll|d))?(?![\w']))")
+
+
 def _capitalise_after_commands(text: str) -> str:
     # Whisper already capitalises real sentences; only words after a spoken
     # command need it. ("3 p.m. today" must stay lowercase.)
@@ -148,7 +152,7 @@ def clean(text: str, replacements: Iterable[tuple[str, str]] = (), final: bool =
     text = _TRAILING_ELLIPSIS_RE.sub("", text)
     text = _ELLIPSIS_RE.sub(_ellipsis, text)
     text = _tidy(text, final, starts_clause)
-    return _capitalise_after_commands(text)
+    return _LOWER_I_RE.sub("I", _capitalise_after_commands(text))
 
 
 def _capitalise(text: str) -> str:

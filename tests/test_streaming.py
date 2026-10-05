@@ -183,9 +183,20 @@ def test_prompt_leaves_out_words_still_in_the_audio():
     s = StreamingSession(transcriber=FakeTranscriber([]), read_audio=lambda: np.zeros(0, np.float32),
                          on_hypothesis=lambda h: None, on_finished=lambda e: None,
                          on_auto_stop=lambda: None, prompt=lambda: "Vocabulary: Dana.")
-    s._committed = ["one", "two", "three", "four"]
+    s._committed = ["One", "two.", "three", "four"]
     s._agreement.seed(["three", "four"])
-    assert s._prompt() == "Vocabulary: Dana. one two"
+    assert s._prompt() == "Vocabulary: Dana. One two."
+
+
+def test_prompt_holds_only_finished_sentences():
+    # Given an unpunctuated fragment, Whisper carries on without punctuation.
+    s = StreamingSession(transcriber=FakeTranscriber([]), read_audio=lambda: np.zeros(0, np.float32),
+                         on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None)
+    s._committed = ["Done.", "I", "think", "we", "should"]
+    assert s._prompt() == "Done."
+    s._committed = ["I", "think", "we", "should"]
+    assert s._prompt() is None
 
 
 def test_no_speech_emits_nothing_and_final_is_quiet():
@@ -365,5 +376,40 @@ def test_prompt_keeps_sentence_marks_committed_on_their_own():
                          on_hypothesis=lambda h: None, on_finished=lambda e: None,
                          on_auto_stop=lambda: None)
     s._emit(["the", "report"], ["."])
-    s._emit([".", "Can", "you"], [])
-    assert s._prompt() == "the report. Can you"
+    s._emit([".", "Can", "you", "go?"], [])
+    assert s._prompt() == "the report. Can you go?"
+
+
+def _session():
+    return StreamingSession(transcriber=FakeTranscriber([]), read_audio=lambda: np.zeros(0, np.float32),
+                            on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                            on_auto_stop=lambda: None)
+
+
+def test_carry_goes_back_to_the_start_of_the_sentence():
+    # A buffer that starts mid-sentence makes Whisper drop punctuation, so the
+    # whole sentence in progress is carried, not just its last words.
+    s = _session()
+    s._buffer = np.zeros(6 * SR, np.float32)
+    timed = [("Done.", 0.5), ("The", 1.0), ("build", 1.5), ("passed", 2.0), ("on", 2.5),
+             ("the", 3.0), ("first", 3.5), ("try.", 4.0)]
+    s._close_utterance(timed, len(timed))
+    assert s._agreement.stable_words == ["The", "build", "passed", "on", "the", "first", "try."]
+    assert len(s._buffer) == 6 * SR - int(0.5 * SR)
+
+
+def test_buffer_start_counts_as_a_sentence_start_after_a_full_stop():
+    s = _session()
+    s._committed = ["Earlier."]
+    s._buffer = np.zeros(3 * SR, np.float32)
+    s._close_utterance([("so", 0.5), ("then", 1.0), ("what", 1.5)], 3)
+    assert s._agreement.stable_words == ["so", "then", "what"]
+    assert len(s._buffer) == 3 * SR
+
+
+def test_a_long_sentence_carries_only_its_last_words():
+    s = _session()
+    s._buffer = np.zeros(13 * SR, np.float32)
+    timed = [(f"w{i}", float(i)) for i in range(1, 13)]   # one sentence, 12 s long
+    s._close_utterance(timed, len(timed))
+    assert len(s._agreement.stable_words) <= StreamingSession.CARRY_WORDS
