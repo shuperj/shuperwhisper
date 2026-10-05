@@ -81,59 +81,69 @@ export function withTimeout<T>(p: Promise<T>, ms = 5000): Promise<T> {
   });
 }
 
-/** pywebview injects the API object asynchronously. */
+/** Ready once pywebview has filled in the API's functions: `window.pywebview`
+ *  itself appears earlier, and calling into it then throws. */
+function bridgeReady(): boolean {
+  return typeof window.pywebview?.api?.get_config === "function";
+}
+
+let ready: Promise<void> | null = null;
+
+/** pywebview injects the API object asynchronously. Every call waits for it,
+ *  so nothing can run too early (the installed build loads slower than dev). */
 export function waitForBridge(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (window.pywebview) return resolve();
-    let resolved = false;
-    const done = () => {
-      if (resolved) return;
-      resolved = true;
-      resolve();
-    };
-    window.addEventListener("pywebviewready", done, { once: true });
-    const interval = setInterval(() => {
-      if (window.pywebview) {
-        clearInterval(interval);
-        done();
-      }
-    }, 100);
-    setTimeout(() => {
-      clearInterval(interval);
-      if (!resolved) {
-        resolved = true;
-        if (window.pywebview) resolve();
-        else reject(new Error("pywebview bridge not available after 10s"));
-      }
-    }, 10_000);
-  });
+  if (!ready) {
+    ready = new Promise((resolve, reject) => {
+      if (bridgeReady()) return resolve();
+      const started = Date.now();
+      const check = () => {
+        if (bridgeReady()) {
+          window.removeEventListener("pywebviewready", check);
+          clearInterval(interval);
+          resolve();
+        } else if (Date.now() - started > 10_000) {
+          clearInterval(interval);
+          ready = null; // let a later call try again
+          reject(new Error("ShuperWhisper didn't connect to this window. Close it and open Settings again."));
+        }
+      };
+      window.addEventListener("pywebviewready", check);
+      const interval = setInterval(check, 50);
+    });
+  }
+  return ready;
+}
+
+/** Call the Python side once it's connected; ``ms`` bounds the call itself. */
+function call<T>(fn: (a: PyWebViewAPI) => Promise<T>, ms?: number): Promise<T> {
+  return waitForBridge().then(() => withTimeout(fn(api()), ms));
 }
 
 // Hotkey capture waits for the user, so it gets their 10 s plus slack.
-export const captureHotkey = () => withTimeout(api().capture_hotkey(10), 12_000);
-export const closeWindow = () => withTimeout(api().close_window());
+export const captureHotkey = () => call((a) => a.capture_hotkey(10), 12_000);
+export const closeWindow = () => call((a) => a.close_window());
 
-export const getConfig = () => withTimeout(api().get_config());
-export const saveConfig = (config: Partial<AppConfig>) => withTimeout(api().save_config(config), 10_000);
-export const getConfigOptions = () => withTimeout(api().get_config_options());
-export const getDevices = () => withTimeout(api().get_devices(), 8000);
+export const getConfig = () => call((a) => a.get_config());
+export const saveConfig = (config: Partial<AppConfig>) => call((a) => a.save_config(config), 10_000);
+export const getConfigOptions = () => call((a) => a.get_config_options());
+export const getDevices = () => call((a) => a.get_devices(), 8000);
 
-export const getStatus = () => withTimeout(api().get_status());
-export const getSystemInfo = () => withTimeout(api().get_system_info());
-export const startMicTest = (ref: DeviceRef | null) => withTimeout(api().start_mic_test(ref));
-export const getMicLevel = () => withTimeout(api().get_mic_level(), 1000);
-export const stopMicTest = () => withTimeout(api().stop_mic_test());
-export const getAutostart = () => withTimeout(api().get_autostart());
-export const setAutostart = (on: boolean) => withTimeout(api().set_autostart(on));
-export const getGpuStatus = () => withTimeout(api().get_gpu_status(), 8000);
-export const setupGpu = () => withTimeout(api().setup_gpu());
-export const getGpuSetupProgress = () => withTimeout(api().get_gpu_setup_progress(), 2000);
-export const cancelGpuSetup = () => withTimeout(api().cancel_gpu_setup());
+export const getStatus = () => call((a) => a.get_status());
+export const getSystemInfo = () => call((a) => a.get_system_info());
+export const startMicTest = (ref: DeviceRef | null) => call((a) => a.start_mic_test(ref));
+export const getMicLevel = () => call((a) => a.get_mic_level(), 1000);
+export const stopMicTest = () => call((a) => a.stop_mic_test());
+export const getAutostart = () => call((a) => a.get_autostart());
+export const setAutostart = (on: boolean) => call((a) => a.set_autostart(on));
+export const getGpuStatus = () => call((a) => a.get_gpu_status(), 8000);
+export const setupGpu = () => call((a) => a.setup_gpu());
+export const getGpuSetupProgress = () => call((a) => a.get_gpu_setup_progress(), 2000);
+export const cancelGpuSetup = () => call((a) => a.cancel_gpu_setup());
 
-export const getDictionary = () => withTimeout(api().get_dictionary());
-export const addWord = (word: string, phonetic = "") => withTimeout(api().add_word(word, phonetic));
-export const removeWord = (word: string) => withTimeout(api().remove_word(word));
+export const getDictionary = () => call((a) => a.get_dictionary());
+export const addWord = (word: string, phonetic = "") => call((a) => a.add_word(word, phonetic));
+export const removeWord = (word: string) => call((a) => a.remove_word(word));
 export const updateWord = (oldWord: string, newWord: string, phonetic = "") =>
-  withTimeout(api().update_word(oldWord, newWord, phonetic));
+  call((a) => a.update_word(oldWord, newWord, phonetic));
 // Training records three rounds of ~3 s plus transcription.
-export const trainWord = (word: string) => withTimeout(api().train_word(word), 30_000);
+export const trainWord = (word: string) => call((a) => a.train_word(word), 30_000);
