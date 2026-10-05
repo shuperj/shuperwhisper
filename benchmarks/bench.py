@@ -188,7 +188,7 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
     for key, value in tune.items():  # "JOIN_GAP" or "LocalAgreement.HOLD_WORDS"
         cls, _, attr = key.rpartition(".")
         setattr(getattr(streaming, cls) if cls else StreamingSession, attr,
-                int(value) if value == int(value) and attr.endswith("WORDS") else value)
+                int(value) if value == int(value) else value)  # BEAM=5 must be an int
     if gpu:
         tr.select_compute("auto")  # loads the CUDA runtime DLLs
     peak = _PeakGpu() if gpu else None
@@ -232,7 +232,9 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
             row["live"] = _live(t, padded, 0.4 if gpu else 1.0, speech_end)
         clips.append(row)
         score = wer(expected, row["live"]["text"] if "live" in row else row["batch"]["text"])
-        print(f"  {model:18} {clip_id:34} {variant:11} {score[0]}/{score[1]}", flush=True)
+        error = row.get("live", {}).get("error")
+        print(f"  {model:18} {clip_id:34} {variant:11} {score[0]}/{score[1]}"
+              + (f"  LIVE TYPING FAILED: {error}" if error else ""), flush=True)
     result["clips"] = clips
     if gpu:
         peak.stop()
