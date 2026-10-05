@@ -1,32 +1,39 @@
 /** pywebview exposes a JS API on `window.pywebview.api`.
- *  ALL data communication between React and Python goes through this bridge.
+ *  ALL data communication between React and Python goes through this bridge,
+ *  and every call has a timeout so a stuck backend can't freeze the page.
  */
 
 import type {
   AppConfig,
+  AppStatus,
   ConfigOptions,
   Device,
+  DeviceRef,
   DictionaryEntry,
+  GpuSetupProgress,
+  GpuStatus,
+  SaveResult,
+  SystemInfo,
 } from "./types";
 
 interface PyWebViewAPI {
-  // Window
   close_window: () => Promise<void>;
-
-  // Hotkey
   capture_hotkey: (timeout?: number) => Promise<string | null>;
-
-  // Devices
   get_devices: () => Promise<Device[]>;
-
-  // Config
   get_config: () => Promise<AppConfig>;
-  save_config: (
-    data: Partial<AppConfig>
-  ) => Promise<{ success: boolean; config?: AppConfig; error?: string }>;
+  save_config: (data: Partial<AppConfig>) => Promise<SaveResult>;
   get_config_options: () => Promise<ConfigOptions>;
-
-  // Dictionary
+  get_status: () => Promise<AppStatus>;
+  get_system_info: () => Promise<SystemInfo>;
+  start_mic_test: (ref: DeviceRef | null) => Promise<{ success: boolean; error?: string }>;
+  get_mic_level: () => Promise<number>;
+  stop_mic_test: () => Promise<void>;
+  get_autostart: () => Promise<boolean>;
+  set_autostart: (enabled: boolean) => Promise<boolean>;
+  get_gpu_status: () => Promise<GpuStatus>;
+  setup_gpu: () => Promise<{ success: boolean }>;
+  get_gpu_setup_progress: () => Promise<GpuSetupProgress>;
+  cancel_gpu_setup: () => Promise<void>;
   get_dictionary: () => Promise<DictionaryEntry[]>;
   add_word: (
     word: string,
@@ -38,9 +45,7 @@ interface PyWebViewAPI {
     new_word: string,
     phonetic: string
   ) => Promise<{ success: boolean; error?: string }>;
-  train_word: (
-    word: string
-  ) => Promise<{ success: boolean; transcribed?: string; error?: string }>;
+  train_word: (word: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 declare global {
@@ -54,152 +59,81 @@ function getApi(): PyWebViewAPI | null {
   return window.pywebview?.api ?? null;
 }
 
-// ------------------------------------------------------------------
-// Bridge readiness — pywebview injects the API object asynchronously
-// ------------------------------------------------------------------
+function api(): PyWebViewAPI {
+  const a = getApi();
+  if (!a) throw new Error("Bridge not available");
+  return a;
+}
 
+export function withTimeout<T>(p: Promise<T>, ms = 5000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("ShuperWhisper didn't respond")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
+
+/** pywebview injects the API object asynchronously. */
 export function waitForBridge(): Promise<void> {
   return new Promise((resolve, reject) => {
     if (window.pywebview) return resolve();
-
     let resolved = false;
     const done = () => {
       if (resolved) return;
       resolved = true;
       resolve();
     };
-
-    // Listen for the standard pywebview event
     window.addEventListener("pywebviewready", done, { once: true });
-
-    // Poll as fallback in case the event fired before our listener
     const interval = setInterval(() => {
       if (window.pywebview) {
         clearInterval(interval);
         done();
       }
     }, 100);
-
-    // Timeout after 10 seconds
     setTimeout(() => {
       clearInterval(interval);
       if (!resolved) {
         resolved = true;
-        if (window.pywebview) {
-          resolve();
-        } else {
-          reject(new Error("pywebview bridge not available after 10s"));
-        }
+        if (window.pywebview) resolve();
+        else reject(new Error("pywebview bridge not available after 10s"));
       }
     }, 10_000);
   });
 }
 
-export function isBridgeAvailable(): boolean {
-  return getApi() !== null;
-}
+// Hotkey capture waits for the user, so it gets their 10 s plus slack.
+export const captureHotkey = () => withTimeout(api().capture_hotkey(10), 12_000);
+export const closeWindow = () => withTimeout(api().close_window());
 
-// ------------------------------------------------------------------
-// Window management
-// ------------------------------------------------------------------
+export const getConfig = () => withTimeout(api().get_config());
+export const saveConfig = (config: Partial<AppConfig>) => withTimeout(api().save_config(config), 10_000);
+export const getConfigOptions = () => withTimeout(api().get_config_options());
+export const getDevices = () => withTimeout(api().get_devices(), 8000);
 
-export async function closeWindow(): Promise<void> {
-  const api = getApi();
-  if (!api) {
-    window.close();
-    return;
-  }
-  return api.close_window();
-}
+export const getStatus = () => withTimeout(api().get_status());
+export const getSystemInfo = () => withTimeout(api().get_system_info());
+export const startMicTest = (ref: DeviceRef | null) => withTimeout(api().start_mic_test(ref));
+export const getMicLevel = () => withTimeout(api().get_mic_level(), 1000);
+export const stopMicTest = () => withTimeout(api().stop_mic_test());
+export const getAutostart = () => withTimeout(api().get_autostart());
+export const setAutostart = (on: boolean) => withTimeout(api().set_autostart(on));
+export const getGpuStatus = () => withTimeout(api().get_gpu_status(), 8000);
+export const setupGpu = () => withTimeout(api().setup_gpu());
+export const getGpuSetupProgress = () => withTimeout(api().get_gpu_setup_progress(), 2000);
+export const cancelGpuSetup = () => withTimeout(api().cancel_gpu_setup());
 
-// ------------------------------------------------------------------
-// Hotkey capture
-// ------------------------------------------------------------------
-
-export async function captureHotkey(
-  timeout: number = 10
-): Promise<string | null> {
-  const api = getApi();
-  if (!api) {
-    console.warn("pywebview bridge not available");
-    return null;
-  }
-  return api.capture_hotkey(timeout);
-}
-
-// ------------------------------------------------------------------
-// Config
-// ------------------------------------------------------------------
-
-export async function getConfig(): Promise<AppConfig> {
-  const api = getApi();
-  if (!api) throw new Error("Bridge not available");
-  return api.get_config();
-}
-
-export async function saveConfig(
-  config: Partial<AppConfig>
-): Promise<{ success: boolean; config?: AppConfig; error?: string }> {
-  const api = getApi();
-  if (!api) throw new Error("Bridge not available");
-  return api.save_config(config);
-}
-
-export async function getConfigOptions(): Promise<ConfigOptions> {
-  const api = getApi();
-  if (!api) throw new Error("Bridge not available");
-  return api.get_config_options();
-}
-
-// ------------------------------------------------------------------
-// Devices
-// ------------------------------------------------------------------
-
-export async function getDevices(): Promise<Device[]> {
-  const api = getApi();
-  if (!api) return [];
-  return api.get_devices();
-}
-
-// ------------------------------------------------------------------
-// Dictionary
-// ------------------------------------------------------------------
-
-export async function getDictionary(): Promise<DictionaryEntry[]> {
-  const api = getApi();
-  if (!api) return [];
-  return api.get_dictionary();
-}
-
-export async function addWord(
-  word: string,
-  phonetic: string = ""
-): Promise<DictionaryEntry> {
-  const api = getApi();
-  if (!api) throw new Error("Bridge not available");
-  return api.add_word(word, phonetic);
-}
-
-export async function removeWord(word: string): Promise<boolean> {
-  const api = getApi();
-  if (!api) return false;
-  return api.remove_word(word);
-}
-
-export async function updateWord(
-  oldWord: string,
-  newWord: string,
-  phonetic: string = ""
-): Promise<{ success: boolean; error?: string }> {
-  const api = getApi();
-  if (!api) throw new Error("Bridge not available");
-  return api.update_word(oldWord, newWord, phonetic);
-}
-
-export async function trainWord(
-  word: string
-): Promise<{ success: boolean; transcribed?: string }> {
-  const api = getApi();
-  if (!api) throw new Error("Bridge not available");
-  return api.train_word(word);
-}
+export const getDictionary = () => withTimeout(api().get_dictionary());
+export const addWord = (word: string, phonetic = "") => withTimeout(api().add_word(word, phonetic));
+export const removeWord = (word: string) => withTimeout(api().remove_word(word));
+export const updateWord = (oldWord: string, newWord: string, phonetic = "") =>
+  withTimeout(api().update_word(oldWord, newWord, phonetic));
+// Training records three rounds of ~3 s plus transcription.
+export const trainWord = (word: string) => withTimeout(api().train_word(word), 30_000);
