@@ -21,7 +21,7 @@ from .app import (
 from . import autostart
 from .bridge import WindowAPI
 from .config import AppConfig, load_config
-from .overlay import OVERLAY_HTML
+from .overlay import INDICATOR_HTML, CaretIndicator
 
 # Icon colors for each state
 _COLORS = {
@@ -189,10 +189,8 @@ class TrayController:
 
     def _on_overlay_loaded(self) -> None:
         """Called when the overlay webview DOM is fully loaded."""
-        # Apply Win32 styles for transparency and non-focusable behavior
+        # Non-activating, hidden from Alt+Tab
         self.app.overlay.apply_win32_styles()
-
-        self.app.overlay.apply_colors()
 
     def run(self) -> None:
         """Create the tray icon and run the event loop.
@@ -216,13 +214,15 @@ class TrayController:
 
         # Create the overlay pywebview window (hidden, frameless, always on top)
         self._overlay_window = webview.create_window(
-            'ShuperWhisper Overlay',
-            html=OVERLAY_HTML,
-            width=280,
-            height=92,
+            'ShuperWhisper Indicator',
+            html=INDICATOR_HTML,
+            width=CaretIndicator.ERROR_WIDTH,
+            height=CaretIndicator.HEIGHT,
             frameless=True,
             hidden=True,
             on_top=True,
+            transparent=True,
+            focus=False,
         )
 
         # Wire the overlay window to the app's overlay controller

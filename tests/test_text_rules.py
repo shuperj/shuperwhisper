@@ -175,3 +175,30 @@ class TestJoin:
 
     def test_empty_text(self):
         assert join("", "Hello") == ""
+
+
+class TestPartial:
+    def test_partial_keeps_trailing_comma(self):
+        assert clean("I think,", final=False) == "I think,"
+
+    def test_final_drops_trailing_comma(self):
+        assert clean("I think,") == "I think"
+
+    def test_partial_dash_becomes_trailing_comma(self):
+        assert clean("I went home —", final=False) == "I went home,"
+
+
+class TestChunks:
+    def test_period_at_chunk_end_is_a_word(self):
+        assert clean("the trial period", final=False) == "the trial period"
+
+    def test_period_at_utterance_end_is_a_command(self):
+        assert clean("the trial period") == "the trial."
+
+    def test_new_line_at_chunk_end_is_words(self):
+        assert clean("a new line", final=False) == "a new line"
+
+
+def test_chunk_starting_mid_clause_keeps_new_line_words():
+    assert clean("new line of products", final=False, starts_clause=False) == "new line of products"
+    assert clean("new line thanks", final=False, starts_clause=True) == "\nThanks"

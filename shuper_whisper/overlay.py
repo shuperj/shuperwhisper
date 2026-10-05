@@ -1,487 +1,212 @@
-"""Floating recording overlay with CSS animations via pywebview."""
+"""Small dictation indicator anchored under the text caret.
+
+A pywebview window (transparent, frameless, never focused) holding a pill
+with a mic glyph and five level bars. Follows the system light/dark theme.
+"""
 
 import ctypes
 import ctypes.wintypes
+import json
 import threading
-from typing import Callable, Optional
+import time
 
+from .caret import caret_rect, foreground_rect, place_below
 
-
-# Win32 structures for multi-monitor detection
-class _RECT(ctypes.Structure):
-    _fields_ = [
-        ("left", ctypes.c_long),
-        ("top", ctypes.c_long),
-        ("right", ctypes.c_long),
-        ("bottom", ctypes.c_long),
-    ]
-
-
-class _MONITORINFO(ctypes.Structure):
-    _fields_ = [
-        ("cbSize", ctypes.c_ulong),
-        ("rcMonitor", _RECT),
-        ("rcWork", _RECT),
-        ("dwFlags", ctypes.c_ulong),
-    ]
-
-# Embedded HTML/CSS/JS for the overlay — no external files, no PyInstaller path issues
-OVERLAY_HTML = """\
+INDICATOR_HTML = """\
 <!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #010101;
-    overflow: hidden;
-    user-select: none;
-    -webkit-app-region: no-drag;
-  }
-
-  .overlay-root {
-    opacity: 1;
-    transition: opacity 0.15s ease;
-  }
-  .overlay-root.hidden { opacity: 0; pointer-events: none; }
-
-  .container {
-    width: 244px;
-    margin: 8px 18px;
-    position: relative;
-  }
-
-  /* Pill wrapper — clips the rotating glow to the border shape */
-  .pill-wrapper {
-    position: relative;
-    width: 244px;
-    height: 44px;
-    border-radius: 22px;
-    overflow: hidden;
-  }
-
-  /* Animated conic gradient glow (processing state) */
-  .pill-glow {
-    position: absolute;
-    top: -100%;
-    left: -100%;
-    width: 300%;
-    height: 300%;
-    background: conic-gradient(
-      transparent 0deg,
-      transparent 200deg,
-      var(--accent-dim, rgba(255,68,102,0.25)) 280deg,
-      var(--accent, #ff4466) 350deg,
-      transparent 360deg
-    );
-    animation: spin 2s linear infinite;
-    opacity: 0;
-    transition: opacity 0.3s ease;
-    z-index: 1;
-  }
-
-  .pill-glow.active { opacity: 1; }
-
-  @keyframes spin {
-    from { transform: rotate(0deg); }
-    to { transform: rotate(360deg); }
-  }
-
-  /* Static white border (recording state) */
-  .pill-border-static {
-    position: absolute;
-    inset: 0;
-    border-radius: 22px;
-    border: 2px solid #ffffff;
-    z-index: 2;
-    pointer-events: none;
-    transition: opacity 0.2s ease;
-  }
-
-  /* Pill content — covers center, leaving only the 2px border ring visible */
-  .pill-content {
-    position: absolute;
-    inset: 2px;
-    border-radius: 20px;
-    background: var(--bg, #1a1a2e);
-    z-index: 3;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-  }
-
-  /* Outer glow shadow during processing */
-  .pill-wrapper.processing {
-    filter: drop-shadow(0 0 8px var(--accent-dim, rgba(255,68,102,0.25)));
-  }
-
-  /* Waveform bars */
-  .waveform {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    height: 22px;
-  }
-
-  .bar {
-    width: 4px;
-    border-radius: 2px;
-    background: var(--bar-idle, #3f1122);
-    transition: height 50ms ease-out, background-color 100ms ease;
-    min-height: 4px;
-  }
-
-  .bar.active { background: var(--accent, #ff4466); }
-
-  /* Processing text */
-  .processing-text {
-    display: none;
-    color: #cccccc;
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0.5px;
-  }
-
-  .processing-text.visible {
-    display: block;
-    animation: shimmer 1.5s ease-in-out infinite;
-  }
-
-  @keyframes shimmer {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 1; }
-  }
-
-</style>
-</head>
-<body>
-  <div class="overlay-root hidden" id="root">
-    <div class="container">
-      <div class="pill-wrapper" id="pill-wrapper">
-        <div class="pill-glow" id="glow"></div>
-        <div class="pill-border-static" id="border-static"></div>
-        <div class="pill-content" id="content">
-          <div class="waveform" id="waveform"></div>
-          <div class="processing-text" id="proc-text">Processing...</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    var BAR_COUNT = 14;
-    var waveform = document.getElementById('waveform');
-    for (var i = 0; i < BAR_COUNT; i++) {
-      var bar = document.createElement('div');
-      bar.className = 'bar';
-      bar.style.height = '4px';
-      waveform.appendChild(bar);
+<html><head><meta charset="utf-8"><style>
+  :root { --bg: rgba(243,243,243,.96); --fg: #1a1a1a; --accent: #0067c0;
+          --border: rgba(0,0,0,.08); --error: #c42b1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: rgba(44,44,44,.96); --fg: #ffffff; --accent: #4cc2ff;
+            --border: rgba(255,255,255,.08); --error: #ff99a4; } }
+  html, body { margin: 0; background: transparent; overflow: hidden; user-select: none;
+               font: 12px "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  .pill { position: absolute; left: 4px; top: 4px; height: 26px; padding: 0 11px 0 9px;
+          display: flex; align-items: center; gap: 7px; border-radius: 13px; background: var(--bg);
+          color: var(--fg); border: 1px solid var(--border);
+          box-shadow: 0 1px 4px rgba(0,0,0,.16); opacity: 0; transform: translateY(-2px);
+          transition: opacity .12s ease, transform .12s ease; white-space: nowrap; }
+  .pill.on { opacity: 1; transform: none; }
+  .mic { width: 13px; height: 13px; color: var(--accent); flex: none; }
+  .bars { display: flex; align-items: center; gap: 2px; height: 14px; }
+  .bars i { display: block; width: 3px; height: 3px; border-radius: 2px; background: var(--accent);
+            transition: height .06s linear; }
+  .finishing .bars i { animation: pulse 1s ease-in-out infinite; height: 4px; }
+  .finishing .bars i:nth-child(2) { animation-delay: .1s } .finishing .bars i:nth-child(3) { animation-delay: .2s }
+  .finishing .bars i:nth-child(4) { animation-delay: .3s } .finishing .bars i:nth-child(5) { animation-delay: .4s }
+  @keyframes pulse { 50% { opacity: .3 } }
+  .msg { display: none; color: var(--error); }
+  .error .bars { display: none } .error .msg { display: inline } .error .mic { color: var(--error) }
+</style></head><body>
+<div class="pill" id="pill">
+  <svg class="mic" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v4a2.5 2.5 0 0 0 5 0v-4A2.5 2.5 0 0 0 8 1Zm-4.5 6a.5.5 0 0 0-1 0 5.5 5.5 0 0 0 5 5.48V14H6a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H8.5v-1.52a5.5 5.5 0 0 0 5-5.48.5.5 0 0 0-1 0 4.5 4.5 0 0 1-9 0Z"/></svg>
+  <span class="bars"><i></i><i></i><i></i><i></i><i></i></span>
+  <span class="msg" id="msg"></span>
+</div>
+<script>
+  var pill = document.getElementById('pill'), bars = pill.querySelectorAll('.bars i');
+  function show() { pill.className = 'pill on'; }
+  function hide() { pill.className = 'pill'; }
+  function setState(s) { pill.className = 'pill on ' + s; }
+  function showError(m) { document.getElementById('msg').textContent = m; pill.className = 'pill on error'; }
+  function updateLevels(levels) {
+    for (var i = 0; i < bars.length; i++) {
+      bars[i].style.height = Math.max(3, Math.min(14, 3 + (levels[i] || 0) / 0.05 * 11)) + 'px';
     }
-
-    var root = document.getElementById('root');
-    var glow = document.getElementById('glow');
-    var pillWrapper = document.getElementById('pill-wrapper');
-    var borderStatic = document.getElementById('border-static');
-    var procText = document.getElementById('proc-text');
-    var bars = waveform.children;
-
-    function showOverlay(mode, fmtLabel) {
-      root.classList.remove('hidden');
-      waveform.style.display = 'flex';
-      procText.classList.remove('visible');
-      glow.classList.remove('active');
-      pillWrapper.classList.remove('processing');
-      borderStatic.style.opacity = '1';
-      for (var i = 0; i < bars.length; i++) {
-        bars[i].style.height = '4px';
-        bars[i].classList.remove('active');
-      }
-    }
-
-    function showProcessing() {
-      waveform.style.display = 'none';
-      procText.classList.add('visible');
-      glow.classList.add('active');
-      pillWrapper.classList.add('processing');
-      borderStatic.style.opacity = '0';
-    }
-
-    function hideOverlay() {
-      root.classList.add('hidden');
-      glow.classList.remove('active');
-      pillWrapper.classList.remove('processing');
-    }
-
-    function updateLevels(levels) {
-      for (var i = 0; i < bars.length && i < levels.length; i++) {
-        var norm = Math.min(1.0, levels[i] / 0.05);
-        var h = Math.max(4, norm * 22);
-        bars[i].style.height = h + 'px';
-        if (norm > 0.1) {
-          bars[i].classList.add('active');
-        } else {
-          bars[i].classList.remove('active');
-        }
-      }
-    }
-
-    function setColors(accent, bg) {
-      var r = parseInt(accent.slice(1,3), 16);
-      var g = parseInt(accent.slice(3,5), 16);
-      var b = parseInt(accent.slice(5,7), 16);
-      root.style.setProperty('--accent', accent);
-      root.style.setProperty('--accent-dim', 'rgba(' + r + ',' + g + ',' + b + ',0.25)');
-      root.style.setProperty('--bar-idle', 'rgba(' + r + ',' + g + ',' + b + ',0.25)');
-      root.style.setProperty('--bg', bg);
-    }
-  </script>
-</body>
-</html>
+  }
+</script></body></html>
 """
 
 
-class RecordingOverlay:
-    """Floating overlay using pywebview with CSS animations.
+class CaretIndicator:
+    WIDTH = 92          # logical px, including the 4 px shadow margin each side
+    HEIGHT = 34
+    ERROR_WIDTH = 340
+    GAP = 6
+    BAR_COUNT = 5
+    ERROR_SECONDS = 4.0
 
-    Uses Win32 LWA_COLORKEY for window transparency (#010101 becomes transparent).
-    All public methods are thread-safe (evaluate_js posts to the GUI thread).
-    """
-
-    # Layout constants (kept for API compatibility with tests and app.py)
-    WINDOW_W = 280
-    WINDOW_H_HOLD = 60
-    WINDOW_H_TOGGLE = 92
-    BAR_COUNT = 14
-
-    def __init__(self, position: str = "top_center"):
-        self._position = position
-        self._accent_color = "#ff4466"
-        self._bg_color = "#1a1a2e"
-        self._visible = False
-        self._mode = "hold"
-        self._state = "recording"
-        self._window = None  # pywebview window, set by tray.py via set_window()
+    def __init__(self):
+        self._window = None
         self._hwnd = None
-        self._ready = threading.Event()
+        self._visible = False
+        self._width = self.WIDTH
+        # Bumped by every show/hide: a delayed hide only acts if nothing has
+        # happened since it was scheduled.
+        self._generation = 0
+        self._gen_lock = threading.Lock()
 
-    @staticmethod
-    def _hex_alpha(hex_color: str, alpha: float) -> str:
-        """Blend a hex color toward black by alpha."""
-        r = int(hex_color[1:3], 16)
-        g = int(hex_color[3:5], 16)
-        b = int(hex_color[5:7], 16)
-        r = int(r * alpha)
-        g = int(g * alpha)
-        b = int(b * alpha)
-        return f"#{r:02x}{g:02x}{b:02x}"
+    def _bump(self) -> int:
+        with self._gen_lock:
+            self._generation += 1
+            return self._generation
+
+    # -- window plumbing -----------------------------------------------------------
 
     def set_window(self, window) -> None:
-        """Set the pywebview window reference. Called by tray.py after creation."""
         self._window = window
-        self._ready.set()
 
     def apply_win32_styles(self) -> None:
-        """Apply Win32 transparency and no-activate styles.
-
-        Called after the pywebview window is fully loaded.
-        """
-        try:
-            # Find the HWND by window title
-            hwnd = ctypes.windll.user32.FindWindowW(None, "ShuperWhisper Overlay")
-
-            if not hwnd:
-                # Fallback: enumerate windows by PID
-                import os
-                pid = os.getpid()
-                found = []
-
-                @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-                def enum_cb(h, _):
-                    proc_id = ctypes.c_ulong()
-                    ctypes.windll.user32.GetWindowThreadProcessId(
-                        h, ctypes.byref(proc_id)
-                    )
-                    if proc_id.value == pid:
-                        length = ctypes.windll.user32.GetWindowTextLengthW(h)
-                        if length > 0:
-                            buf = ctypes.create_unicode_buffer(length + 1)
-                            ctypes.windll.user32.GetWindowTextW(h, buf, length + 1)
-                            if "Overlay" in buf.value:
-                                found.append(h)
-                    return True
-
-                ctypes.windll.user32.EnumWindows(enum_cb, 0)
-                hwnd = found[0] if found else None
-
-            if not hwnd:
-                print("WARNING: Could not find overlay HWND, transparency unavailable")
-                return
-
-            self._hwnd = hwnd
-
-            GWL_EXSTYLE = -20
-            WS_EX_NOACTIVATE = 0x08000000
-            WS_EX_TOOLWINDOW = 0x00000080
-            WS_EX_LAYERED = 0x00080000
-            LWA_COLORKEY = 0x00000001
-
-            style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            ctypes.windll.user32.SetWindowLongW(
-                hwnd, GWL_EXSTYLE,
-                style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-            )
-
-            # Set #010101 as the transparent color key (COLORREF is BGR)
-            color_key = 0x00010101
-            ctypes.windll.user32.SetLayeredWindowAttributes(
-                hwnd, color_key, 0, LWA_COLORKEY,
-            )
-
-            # Position the window
-            self._position_window()
-
-        except Exception as e:
-            print(f"WARNING: Win32 overlay styles failed: {e}")
-
-    @staticmethod
-    def _get_active_monitor_info() -> tuple[int, int, int, int, float]:
-        """Get work area and DPI scale of the monitor with the foreground window.
-
-        Returns (x, y, width, height, scale) where scale is the DPI factor
-        (e.g. 1.0 for 96 DPI, 1.25 for 120 DPI, 1.5 for 144 DPI).
-        Falls back to the primary monitor if no foreground window exists.
-        """
+        """Never activate, never appear in Alt+Tab, never catch clicks, and
+        start hidden (pywebview shows transparent windows once on load)."""
         user32 = ctypes.windll.user32
-        MONITOR_DEFAULTTOPRIMARY = 0x00000001
-
-        hmon = None
-        fg_hwnd = user32.GetForegroundWindow()
-        if fg_hwnd:
-            hmon = user32.MonitorFromWindow(fg_hwnd, MONITOR_DEFAULTTOPRIMARY)
-
-        work_area = (0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1))
-        if hmon:
-            mi = _MONITORINFO()
-            mi.cbSize = ctypes.sizeof(_MONITORINFO)
-            if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
-                rc = mi.rcWork
-                work_area = (rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top)
-
-        # Query per-monitor DPI (Windows 8.1+)
-        scale = 1.0
-        if hmon:
-            try:
-                dpi_x = ctypes.c_uint()
-                dpi_y = ctypes.c_uint()
-                # MDT_EFFECTIVE_DPI = 0
-                ctypes.windll.shcore.GetDpiForMonitor(
-                    hmon, 0, ctypes.byref(dpi_x), ctypes.byref(dpi_y)
-                )
-                scale = dpi_x.value / 96.0
-            except Exception:
-                pass
-
-        return (*work_area, scale)
-
-    def _position_window(self) -> None:
-        """Position overlay on the monitor containing the focused window.
-
-        Scales overlay dimensions by the monitor's DPI factor so it appears
-        the same physical size on all displays.
-        """
-        if not self._hwnd:
+        hwnd = user32.FindWindowW(None, "ShuperWhisper Indicator")
+        if not hwnd:
+            print("WARNING: indicator window not found")
             return
-
-        mon_x, mon_y, mon_w, mon_h, scale = self._get_active_monitor_info()
-
-        w = int(self.WINDOW_W * scale)
-        h_base = self.WINDOW_H_TOGGLE if self._mode == "toggle" else self.WINDOW_H_HOLD
-        h = int(h_base * scale)
-        x = mon_x + (mon_w - w) // 2
-
-        margin_top = int(80 * scale)
-        margin_bottom = int(100 * scale)
-
-        positions = {
-            "top_center": mon_y + margin_top,
-            "center": mon_y + (mon_h - h) // 2,
-            "bottom_center": mon_y + mon_h - h - margin_bottom,
-        }
-        y = positions.get(self._position, mon_y + margin_top)
-
-        SWP_NOACTIVATE = 0x0010
-        SWP_NOZORDER = 0x0004
-        ctypes.windll.user32.SetWindowPos(
-            self._hwnd, None, x, y, w, h, SWP_NOACTIVATE | SWP_NOZORDER,
-        )
+        self._hwnd = hwnd
+        GWL_EXSTYLE = -20
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT = 0x08000000, 0x00000080, 0x00000020
+        style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                              style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT)
+        if not self._visible:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE
 
     def _eval(self, js: str) -> None:
-        """Thread-safe evaluate_js wrapper. No-op if window not set."""
         if self._window:
             try:
                 self._window.evaluate_js(js)
             except Exception:
-                pass  # Window may be closing or not ready
+                pass
 
-    def start(self) -> None:
-        """No-op for API compatibility. Window is created by tray.py."""
-        pass
+    @staticmethod
+    def _monitor_for(point):
+        """(work area, DPI scale) of the monitor containing ``point``."""
+        user32 = ctypes.windll.user32
+
+        class _MI(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", ctypes.wintypes.RECT),
+                        ("rcWork", ctypes.wintypes.RECT), ("dwFlags", ctypes.c_ulong)]
+
+        hmon = user32.MonitorFromPoint(ctypes.wintypes.POINT(*point), 2)  # NEAREST
+        info = _MI(cbSize=ctypes.sizeof(_MI))
+        user32.GetMonitorInfoW(hmon, ctypes.byref(info))
+        rc = info.rcWork
+        scale = 1.0
+        try:
+            dx, dy = ctypes.c_uint(), ctypes.c_uint()
+            ctypes.windll.shcore.GetDpiForMonitor(hmon, 0, ctypes.byref(dx), ctypes.byref(dy))
+            scale = dx.value / 96.0
+        except Exception:
+            pass
+        return (rc.left, rc.top, rc.right, rc.bottom), scale
+
+    def _move(self, x, y, w, h) -> None:
+        SWP_NOACTIVATE, SWP_NOZORDER = 0x0010, 0x0004
+        ctypes.windll.user32.SetWindowPos(self._hwnd, None, x, y, w, h,
+                                          SWP_NOACTIVATE | SWP_NOZORDER)
+
+    def reposition(self, use_uia: bool = False) -> None:
+        """Sit just under the caret; fall back to the bottom of the window."""
+        if not self._hwnd:
+            return
+        caret = caret_rect(use_uia=use_uia)
+        if caret is None:
+            window = foreground_rect()
+            if window is None:
+                return
+            work, scale = self._monitor_for(((window[0] + window[2]) // 2, window[3]))
+            w, h = int(self._width * scale), int(self.HEIGHT * scale)
+            x = (window[0] + window[2] - w) // 2
+            self._move(x, window[3] - h - int(24 * scale), w, h)
+            return
+        work, scale = self._monitor_for((caret[0], caret[3]))
+        w, h = int(self._width * scale), int(self.HEIGHT * scale)
+        x, y = place_below(caret, work, (w, h), int(self.GAP * scale))
+        self._move(x, y, w, h)
+
+    # -- public API ----------------------------------------------------------------
 
     def show(self) -> None:
-        """Show the overlay without stealing focus. Thread-safe."""
-        self._mode = "hold"
-        self._state = "recording"
+        self._bump()
         self._visible = True
-        self._eval("showOverlay('hold', '')")
+        self._width = self.WIDTH
+        self._eval("show()")
         if self._hwnd:
-            SW_SHOWNOACTIVATE = 8
-            ctypes.windll.user32.ShowWindow(self._hwnd, SW_SHOWNOACTIVATE)
-            self._position_window()
+            self.reposition(use_uia=True)
+            ctypes.windll.user32.ShowWindow(self._hwnd, 8)  # SW_SHOWNOACTIVATE
 
-    def show_processing(self) -> None:
-        """Switch overlay to processing state. Thread-safe."""
-        if not self._visible:
-            return
-        self._state = "processing"
-        self._eval("showProcessing()")
+    def set_state(self, state: str) -> None:
+        self._eval(f"setState('{state}')")
+
+    def show_error(self, message: str) -> None:
+        generation = self._bump()
+        self._visible = True
+        self._width = self.ERROR_WIDTH
+        self._eval(f"showError({json.dumps(message)})")
+        if self._hwnd:
+            self.reposition(use_uia=False)
+            ctypes.windll.user32.ShowWindow(self._hwnd, 8)
+
+        def _later():
+            time.sleep(self.ERROR_SECONDS)
+            if self._generation == generation:  # nothing newer is showing
+                self.hide()
+        threading.Thread(target=_later, daemon=True).start()
 
     def hide(self) -> None:
-        """Hide the overlay. Thread-safe."""
+        generation = self._bump()
         self._visible = False
-        self._state = "recording"
-        self._eval("hideOverlay()")
-
-        # Hide window at Win32 level after CSS fade
+        self._eval("hide()")
         if self._hwnd:
-            def _delayed_hide():
-                import time
-                time.sleep(0.2)
-                if not self._visible:
-                    ctypes.windll.user32.ShowWindow(self._hwnd, 0)  # SW_HIDE
-            threading.Thread(target=_delayed_hide, daemon=True).start()
+            def _later():
+                time.sleep(0.15)
+                if self._generation == generation:
+                    ctypes.windll.user32.ShowWindow(self._hwnd, 0)
+            threading.Thread(target=_later, daemon=True).start()
 
-    def update_levels(self, levels: list[float]) -> None:
-        """Update waveform levels. Thread-safe."""
-        if not self._visible or self._state != "recording":
+    def update_levels(self, levels) -> None:
+        if not self._visible:
             return
-        js_arr = "[" + ",".join(f"{l:.4f}" for l in levels[:self.BAR_COUNT]) + "]"
-        self._eval(f"updateLevels({js_arr})")
+        self._eval("updateLevels([" + ",".join(f"{v:.4f}" for v in levels[:self.BAR_COUNT]) + "])")
 
     @property
     def is_visible(self) -> bool:
         return self._visible
 
-    def set_position(self, position: str) -> None:
-        self._position = position
-
-    def apply_colors(self) -> None:
-        self._eval(f"setColors('{self._accent_color}', '{self._bg_color}')")
-
     def destroy(self) -> None:
-        """Clean up the overlay."""
         self._visible = False
         if self._window:
             try:

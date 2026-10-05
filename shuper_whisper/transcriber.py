@@ -92,18 +92,23 @@ def select_compute(preference: str = "auto") -> tuple[str, str]:
     return ("cpu", "int8")
 
 
-def resolve_model_size(model_size: str, device: str) -> str:
+def resolve_model_size(model_size: str, device: str, live: bool = False) -> str:
     if model_size != "auto":
         return model_size
-    return "large-v3-turbo" if device == "cuda" else "small"
+    if device == "cuda":
+        return "large-v3-turbo"
+    return "base" if live else "small"  # live re-decodes every second; small is too slow for that
 
 
 class Transcriber:
     """Wraps faster-whisper's WhisperModel."""
 
     def __init__(self, model_size: str = "auto", language: str = "en", compute: str = "auto",
+                 live_typing: str = "auto",
                  device: Optional[str] = None, compute_type: Optional[str] = None):
         self._compute_pref = compute
+        self._live_pref = live_typing
+        self._live = False
         self._requested_size = model_size
         self._model_size = model_size
         self._language = language
@@ -114,7 +119,8 @@ class Transcriber:
     def _configure(self, device: str, compute_type: str) -> str:
         """Fix device, precision and model size; return the model source."""
         self._device, self._compute_type = device, compute_type
-        self._model_size = resolve_model_size(self._requested_size, device)
+        self._live = self._live_pref == "on" or (self._live_pref == "auto" and device == "cuda")
+        self._model_size = resolve_model_size(self._requested_size, device, self._live)
         return _bundled_model_path(self._model_size) or self._model_size
 
     def load_model(self) -> None:
@@ -170,10 +176,42 @@ class Transcriber:
         # boundaries get exactly one.
         return " ".join(t for t in (s.text.strip() for s in segments) if t)
 
+    def transcribe_words(self, audio: np.ndarray, initial_prompt: Optional[str] = None,
+                         hotwords: Optional[str] = None, beam_size: int = 1,
+                         timestamps: bool = False) -> list:
+        """Fast pass for live dictation: words of the whole buffer.
+
+        Returns words, or (word, end_seconds) pairs with ``timestamps=True``.
+        No VAD filter here -- StreamingSession already segments by speech.
+        """
+        if self._model is None:
+            raise RuntimeError("Model not loaded. Call load_model() first.")
+        kwargs = {
+            "beam_size": beam_size,
+            "language": None if self._language == "auto" else self._language,
+            "vad_filter": False,
+            "condition_on_previous_text": False,
+        }
+        if initial_prompt:
+            kwargs["initial_prompt"] = initial_prompt
+        if hotwords:
+            kwargs["hotwords"] = hotwords
+        if timestamps:
+            kwargs["word_timestamps"] = True
+            segments = self._run_model(audio, kwargs)
+            return [(w.word.strip(), float(w.end)) for s in segments for w in (s.words or [])
+                    if w.word.strip()]
+        segments = self._run_model(audio, kwargs)
+        return " ".join(s.text.strip() for s in segments).split()
+
     @property
-    def requested(self) -> tuple[str, str]:
-        """(model size, compute preference) as configured, before "auto" resolves."""
-        return self._requested_size, self._compute_pref
+    def live(self) -> bool:
+        return self._live
+
+    @property
+    def requested(self) -> tuple[str, str, str]:
+        """(model size, compute, live typing) as configured, before "auto" resolves."""
+        return self._requested_size, self._compute_pref, self._live_pref
 
     @property
     def loaded(self) -> bool:

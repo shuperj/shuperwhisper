@@ -8,8 +8,10 @@ Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast lo
 
 ## How it works
 
-- **Press once to start, press again to stop** (default `ctrl+shift+space`). The text is typed at your cursor, in whatever app has focus. Your clipboard is never touched.
-- **Spoken commands:** "new line", "new paragraph", "period", "comma", "question mark", "exclamation point" and "colon" become the real thing.
+- **Press once to start, press again to stop** (default `ctrl+shift+space`). Your words are typed at your cursor, in whatever app has focus, and your clipboard is never touched.
+- **Live typing (with an NVIDIA GPU):** words appear as you speak, and the last few may adjust themselves as the sentence becomes clear, like dictation on a Mac. Click into another field mid-sentence and dictation carries on there; the first field is left alone. On a CPU-only PC the text is typed all at once when you stop (Settings can switch live typing on anyway).
+- **A small pill under your cursor** shows that ShuperWhisper is listening. Dictation stops by itself after 30 seconds of silence.
+- **Spoken commands:** "comma", "question mark", "exclamation point", "new line", "new paragraph", "period" and "colon" become the real thing. Pause briefly around "period", "colon" and "new line" so they aren't read as ordinary words ("a trial period").
 - **Clean output:** single spaces, no em-dashes, and fillers like "um" and "uh" are dropped. Spacing and capitalisation follow what's already before your cursor.
 - **Custom dictionary:** add names and jargon. If ShuperWhisper keeps mishearing a word, put what it hears in the hint and it's swapped automatically.
 - **Any microphone,** including Voicemeeter buses and other virtual devices. Devices are remembered by name, so they survive restarts.
@@ -24,8 +26,8 @@ Requires Windows 10/11 x64.
 ## Usage
 
 1. ShuperWhisper starts in the system tray.
-2. Press your hotkey (default: `ctrl+shift+space`) and speak.
-3. Press it again; the text is typed at your cursor.
+2. Click where you want the text, press your hotkey (default: `ctrl+shift+space`) and speak.
+3. Press it again when you're done.
 4. Right-click the tray icon to open Settings or Quit.
 
 The tray icon is grey when idle, red while listening, amber while transcribing, blue while loading the model and dark red on an error. Hover it to see the error message.
@@ -71,3 +73,7 @@ works.
 If you find ShuperWhisper useful, consider buying me a coffee:
 
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/shuperj)
+
+## Limits
+
+- Windows doesn't let a normal app type into windows running as administrator (an elevated terminal, for example). ShuperWhisper says so in the pill instead of failing silently.

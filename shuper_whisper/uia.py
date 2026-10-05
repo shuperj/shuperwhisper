@@ -180,6 +180,47 @@ def text_before_caret(timeout: float = 0.3) -> str | None:
     return _classic_edit_before_caret_of(info.hwndFocus) if info and info.hwndFocus else None
 
 
+def _caret_bounds_of(element):
+    _uia, mod = _client()
+    pattern = element.GetCurrentPattern(_UIA_TEXT_PATTERN_ID)
+    if not pattern:
+        return None
+    selection = pattern.QueryInterface(mod.IUIAutomationTextPattern).GetSelection()
+    if not selection or selection.Length == 0:
+        return None
+    caret = selection.GetElement(0).Clone()
+    caret.MoveEndpointByRange(mod.TextPatternRangeEndpoint_End, caret, mod.TextPatternRangeEndpoint_Start)
+    # A collapsed range usually has no rectangle; measure the character before
+    # the caret -- unless that's a line break (the caret is at the start of a
+    # new line), then the character after it.
+    before = caret.Clone()
+    before.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_Start, mod.TextUnit_Character, -1)
+    if before.GetText(1) not in ("\r", "\n", "\v", ""):
+        rects = list(before.GetBoundingRectangles() or ())
+        if len(rects) >= 4:
+            left, top, width, height = rects[-4:]
+            right = int(left + width)
+            return (right, int(top), right + 1, int(top + height))
+    after = caret.Clone()
+    after.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_End, mod.TextUnit_Character, 1)
+    rects = list(after.GetBoundingRectangles() or ())
+    if len(rects) < 4:
+        return None
+    left, top, _width, height = rects[:4]
+    return (int(left), int(top), int(left) + 1, int(top + height))
+
+
+def _caret_bounds():
+    uia, _mod = _client()
+    element = uia.GetFocusedElement()
+    return _caret_bounds_of(element) if element else None
+
+
+def caret_bounds(timeout: float = 0.15):
+    """Screen rect just after the character before the caret, or None."""
+    return _run(_caret_bounds, timeout)
+
+
 def focused_element_id(timeout: float = 0.3) -> tuple | None:
     """UIA RuntimeId of the focused element: identifies "the same field"."""
     return _run(_focused_element_id, timeout)

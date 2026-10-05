@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from shuper_whisper import transcriber as tr
 
@@ -37,6 +38,29 @@ def test_vad_and_language_passed():
     assert kw["initial_prompt"] == "Vocabulary: Dana."
     assert kw["hotwords"] == "Dana"
     assert kw["condition_on_previous_text"] is False
+
+
+def test_transcribe_words_is_greedy_and_split():
+    t = loaded([" Hello there,", " friend."])
+    assert t.transcribe_words(np.zeros(16000, np.float32)) == ["Hello", "there,", "friend."]
+    assert t._model.kwargs["beam_size"] == 1
+    assert t._model.kwargs["vad_filter"] is False
+
+
+def test_auto_model_depends_on_live_on_cpu():
+    assert tr.resolve_model_size("auto", "cpu", live=True) == "base"
+    assert tr.resolve_model_size("auto", "cpu", live=False) == "small"
+    assert tr.resolve_model_size("auto", "cuda", live=True) == "large-v3-turbo"
+
+
+@pytest.mark.parametrize("pref,device,live", [
+    ("auto", "cuda", True), ("auto", "cpu", False), ("on", "cpu", True), ("off", "cuda", False),
+])
+def test_live_decided_from_preference_and_device(monkeypatch, pref, device, live):
+    monkeypatch.setattr(tr, "WhisperModel", lambda *a, **k: object())
+    t = tr.Transcriber(model_size="auto", live_typing=pref, device=device, compute_type="int8")
+    t.load_model()
+    assert t.live is live
 
 
 def test_auto_model_size():
@@ -107,5 +131,13 @@ def test_cuda_failure_during_transcribe_retries_on_cpu(monkeypatch):
 
 
 def test_requested_reports_configuration():
-    t = tr.Transcriber(model_size="auto", compute="cpu")
-    assert t.requested == ("auto", "cpu")
+    t = tr.Transcriber(model_size="auto", compute="cpu", live_typing="off")
+    assert t.requested == ("auto", "cpu", "off")
+
+
+def test_transcribe_words_with_timestamps():
+    seg = SimpleNamespace(text=" Hi there.", words=[SimpleNamespace(word=" Hi", end=0.4),
+                                                     SimpleNamespace(word=" there.", end=0.9)])
+    t = tr.Transcriber(model_size="base", device="cpu", compute_type="int8")
+    t._model = type("M", (), {"transcribe": lambda self, audio, **kw: (iter([seg]), None)})()
+    assert t.transcribe_words(np.zeros(16000, np.float32), timestamps=True) == [("Hi", 0.4), ("there.", 0.9)]

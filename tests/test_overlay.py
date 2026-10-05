@@ -1,148 +1,70 @@
-"""Tests for the overlay module (non-GUI logic only)."""
+"""CaretIndicator non-GUI behaviour."""
 
-import pytest
-
-from shuper_whisper.overlay import RecordingOverlay
-
-
-class TestOverlayInit:
-    def test_default_position(self):
-        o = RecordingOverlay()
-        assert o._position == "top_center"
-
-    def test_custom_position(self):
-        o = RecordingOverlay(position="center")
-        assert o._position == "center"
-
-    def test_initially_not_visible(self):
-        o = RecordingOverlay()
-        assert o.is_visible is False
-
-    def test_default_state_is_recording(self):
-        o = RecordingOverlay()
-        assert o._state == "recording"
+from shuper_whisper import overlay as ov
+from shuper_whisper.overlay import CaretIndicator
 
 
-class TestOverlayPosition:
-    def test_set_position(self):
-        o = RecordingOverlay(position="top_center")
-        o.set_position("bottom_center")
-        assert o._position == "bottom_center"
+class Win:
+    def __init__(self):
+        self.js = []
+
+    def evaluate_js(self, js):
+        self.js.append(js)
 
 
-class TestOverlayConstants:
-    def test_bar_count_positive(self):
-        assert RecordingOverlay.BAR_COUNT > 0
-
-    def test_window_dimensions(self):
-        assert RecordingOverlay.WINDOW_W > 0
-        assert RecordingOverlay.WINDOW_H_HOLD > 0
-        assert RecordingOverlay.WINDOW_H_TOGGLE > RecordingOverlay.WINDOW_H_HOLD
+def test_initially_hidden():
+    assert CaretIndicator().is_visible is False
 
 
-class TestOverlayMultiMonitor:
-    def test_position_window_centers_on_active_monitor(self):
-        o = RecordingOverlay(position="top_center")
-        o._hwnd = 12345
-        o._mode = "hold"
-
-        from unittest.mock import patch, MagicMock
-
-        with patch.object(
-            RecordingOverlay,
-            "_get_active_monitor_info",
-            return_value=(1920, 0, 1920, 1080, 1.0),
-        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
-            o._position_window()
-
-            mock_swp.assert_called_once()
-            args = mock_swp.call_args[0]
-            x, y = args[2], args[3]
-            expected_x = 1920 + (1920 - RecordingOverlay.WINDOW_W) // 2
-            assert x == expected_x
-            assert y == 0 + 80  # top_center offset
-
-    def test_position_center_on_secondary_monitor(self):
-        o = RecordingOverlay(position="center")
-        o._hwnd = 12345
-        o._mode = "toggle"
-
-        from unittest.mock import patch
-
-        with patch.object(
-            RecordingOverlay,
-            "_get_active_monitor_info",
-            return_value=(1920, 0, 2560, 1440, 1.0),
-        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
-            o._position_window()
-
-            args = mock_swp.call_args[0]
-            x, y = args[2], args[3]
-            expected_x = 1920 + (2560 - RecordingOverlay.WINDOW_W) // 2
-            expected_y = 0 + (1440 - RecordingOverlay.WINDOW_H_TOGGLE) // 2
-            assert x == expected_x
-            assert y == expected_y
-
-    def test_position_bottom_center_respects_work_area(self):
-        o = RecordingOverlay(position="bottom_center")
-        o._hwnd = 12345
-        o._mode = "hold"
-
-        from unittest.mock import patch
-
-        # Work area height 1040 (40px taskbar)
-        with patch.object(
-            RecordingOverlay,
-            "_get_active_monitor_info",
-            return_value=(0, 0, 1920, 1040, 1.0),
-        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
-            o._position_window()
-
-            args = mock_swp.call_args[0]
-            y = args[3]
-            expected_y = 0 + 1040 - RecordingOverlay.WINDOW_H_HOLD - 100
-            assert y == expected_y
-
-    def test_no_hwnd_is_noop(self):
-        o = RecordingOverlay()
-        o._hwnd = None
-
-        from unittest.mock import patch
-
-        with patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
-            o._position_window()
-            mock_swp.assert_not_called()
-
-    def test_primary_monitor_offset_at_origin(self):
-        o = RecordingOverlay(position="top_center")
-        o._hwnd = 12345
-        o._mode = "hold"
-
-        from unittest.mock import patch
-
-        with patch.object(
-            RecordingOverlay,
-            "_get_active_monitor_info",
-            return_value=(0, 0, 1920, 1080, 1.0),
-        ), patch("ctypes.windll.user32.SetWindowPos") as mock_swp:
-            o._position_window()
-
-            args = mock_swp.call_args[0]
-            x, y = args[2], args[3]
-            expected_x = (1920 - RecordingOverlay.WINDOW_W) // 2
-            assert x == expected_x
-            assert y == 80
+def test_show_hide_and_states_call_js():
+    ind = CaretIndicator()
+    w = Win()
+    ind.set_window(w)
+    ind.show()
+    ind.set_state("finishing")
+    ind.hide()
+    assert w.js[0].startswith("show(") and "setState('finishing')" in w.js and w.js[-1] == "hide()"
 
 
-class TestOverlayColors:
-    def test_hex_alpha_full(self):
-        result = RecordingOverlay._hex_alpha("#ff4466", 1.0)
-        assert result == "#ff4466"
+def test_error_message_is_escaped():
+    ind = CaretIndicator()
+    ind.ERROR_SECONDS = 0
+    w = Win()
+    ind.set_window(w)
+    ind.show_error("Can't type into 'admin' windows")
+    assert 'showError("Can\'t type into \'admin\' windows")' in w.js
 
-    def test_hex_alpha_half(self):
-        result = RecordingOverlay._hex_alpha("#ff4466", 0.5)
-        assert result == "#7f2233"
 
-    def test_hex_alpha_zero(self):
-        result = RecordingOverlay._hex_alpha("#ff4466", 0.0)
-        assert result == "#000000"
+def test_levels_only_while_visible():
+    ind = CaretIndicator()
+    w = Win()
+    ind.set_window(w)
+    ind.update_levels([0.1] * 5)
+    assert w.js == []
+
+
+def test_reposition_uses_caret_then_window(monkeypatch):
+    moves = []
+    ind = CaretIndicator()
+    ind._hwnd = 1
+    monkeypatch.setattr(ind, "_move", lambda x, y, w, h: moves.append((x, y)))
+    monkeypatch.setattr(ind, "_monitor_for", lambda pt: ((0, 0, 1920, 1040), 1.0))
+    monkeypatch.setattr(ov, "caret_rect", lambda use_uia=False: (500, 300, 502, 320))
+    ind.reposition()
+    monkeypatch.setattr(ov, "caret_rect", lambda use_uia=False: None)
+    monkeypatch.setattr(ov, "foreground_rect", lambda: (100, 100, 900, 700))
+    ind.reposition()
+    assert moves[0] == (494, 326)
+    assert moves[1][1] == 700 - ind.HEIGHT - 24
+
+
+def test_error_auto_hide_spares_a_newer_session(monkeypatch):
+    import time
+    ind = CaretIndicator()
+    ind.ERROR_SECONDS = 0.05
+    w = Win()
+    ind.set_window(w)
+    ind.show_error("Microphone: unplugged")
+    ind.show()                       # the user retries straight away
+    time.sleep(0.2)
+    assert ind.is_visible and w.js[-1] == "show()"

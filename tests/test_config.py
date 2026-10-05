@@ -4,7 +4,7 @@ import json
 
 from shuper_whisper.config import (
     VALID_COMPUTE,
-    VALID_OVERLAY_POSITIONS,
+    VALID_LIVE_TYPING,
     AppConfig,
     load_config,
     save_config,
@@ -18,14 +18,14 @@ class TestDefaults:
         assert c.model_size == "auto"
         assert c.input_device is None
         assert c.language == "en"
-        assert c.overlay_position == "top_center"
         assert c.compute == "auto"
+        assert c.live_typing == "auto"
 
     def test_removed_fields_are_gone(self):
         d = AppConfig().to_dict()
         for key in ("format_mode", "email_tone", "prompt_detail", "hotkey_mode",
                     "smart_spacing", "bullet_mode", "email_mode",
-                    "accent_color", "bg_color"):
+                    "accent_color", "bg_color", "overlay_position"):
             assert key not in d
 
 
@@ -50,16 +50,14 @@ class TestValidate:
         c.validate()
         assert c.language == "en"
 
-    def test_bad_overlay_position_resets(self):
-        c = AppConfig(overlay_position="nowhere")
-        c.validate()
-        assert c.overlay_position == "top_center"
-
-    def test_valid_positions_kept(self):
-        for pos in VALID_OVERLAY_POSITIONS:
-            c = AppConfig(overlay_position=pos)
+    def test_live_typing_values(self):
+        for value in VALID_LIVE_TYPING:
+            c = AppConfig(live_typing=value)
             c.validate()
-            assert c.overlay_position == pos
+            assert c.live_typing == value
+        c = AppConfig(live_typing="sometimes")
+        c.validate()
+        assert c.live_typing == "auto"
 
     def test_compute_values(self):
         for value in VALID_COMPUTE:
@@ -115,11 +113,11 @@ class TestSaveLoad:
         path = str(tmp_path / "config.json")
         ref = {"name": "Mic", "hostapi": "MME"}
         save_config(AppConfig(hotkey="f9", model_size="small", input_device=ref,
-                              language="de", overlay_position="center", compute="cpu"), path)
+                              language="de", compute="cpu", live_typing="off"), path)
         loaded = load_config(path)
         assert (loaded.hotkey, loaded.model_size, loaded.input_device,
-                loaded.language, loaded.overlay_position, loaded.compute) == (
-            "f9", "small", ref, "de", "center", "cpu")
+                loaded.language, loaded.compute, loaded.live_typing) == (
+            "f9", "small", ref, "de", "cpu", "off")
 
     def test_old_config_keys_ignored(self, tmp_path):
         path = str(tmp_path / "config.json")

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AppConfig, ConfigOptions, Device } from "@/lib/types";
 import { captureHotkey } from "@/lib/bridge";
-import { Keyboard, Mic, Globe, MapPin } from "lucide-react";
+import { Keyboard, Mic, Globe } from "lucide-react";
 import { StyledSelect } from "./StyledSelect";
 
 interface GeneralTabProps {
@@ -84,16 +84,6 @@ export function GeneralTab({
     ? deviceId(config.input_device.name, config.input_device.hostapi)
     : "__default__";
 
-  const positionLabels: Record<string, string> = {
-    top_center: "Top Center",
-    center: "Center",
-    bottom_center: "Bottom Center",
-  };
-  const positionOptions = options.overlay_positions.map((p) => ({
-    value: p,
-    label: positionLabels[p] || p,
-  }));
-
   return (
     <div>
       {/* Hotkey */}
@@ -147,18 +137,6 @@ export function GeneralTab({
           options={deviceOptions}
         />
       </FieldRow>
-
-      <div className="border-t border-white/[0.06]" />
-
-      {/* Overlay Position */}
-      <FieldRow icon={MapPin} label="Overlay Position">
-        <StyledSelect
-          value={config.overlay_position}
-          onChange={(v) => updateField("overlay_position", v)}
-          options={positionOptions}
-        />
-      </FieldRow>
-
     </div>
   );
 }

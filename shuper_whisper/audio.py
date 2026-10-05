@@ -135,6 +135,16 @@ class AudioRecorder:
             return None
         return np.concatenate(chunks).astype(np.float32)
 
+    def read_new(self) -> np.ndarray:
+        """16 kHz audio captured since the previous call (for live decoding).
+
+        Hands the audio over rather than keeping a copy: a live session can
+        run for a long time, and the streaming engine keeps what it needs.
+        """
+        with self._lock:
+            fresh, self._chunks = self._chunks, []
+        return np.concatenate(fresh) if fresh else np.zeros(0, np.float32)
+
     # -- levels -----------------------------------------------------------------
 
     def get_levels(self, count: int = 30) -> list[float]:

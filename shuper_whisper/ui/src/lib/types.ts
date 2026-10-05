@@ -8,14 +8,13 @@ export interface AppConfig {
   model_size: string;
   input_device: DeviceRef | null;
   language: string;
-  overlay_position: string;
   compute: "auto" | "cpu";
+  live_typing: "auto" | "on" | "off";
 }
 
 export interface ConfigOptions {
   models: string[];
   languages: Record<string, string>;
-  overlay_positions: string[];
 }
 
 export interface DictionaryEntry {
