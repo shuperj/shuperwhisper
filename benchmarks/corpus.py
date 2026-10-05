@@ -187,11 +187,18 @@ def build_audio(cache_dir: str) -> list[tuple[str, str, str, str]]:
     if not os.path.exists(silence):
         _write_wav(silence, _room(10, rng, clicks=(2.0, 6.0)))
     items.append((SILENCE_CLIP.id, "room", silence, ""))
-    for clip in CLIPS:  # recorded with record.py, if any
-        path = os.path.join(cache_dir, "own", f"{clip.id}.wav")
-        if os.path.exists(path):
-            items.append((clip.id, "own", path, clip.expected))
     return items
+
+
+def own_audio(cache_dir: str) -> list[tuple[str, str, str, str]]:
+    """Your voice, recorded with record.py (variant "own")."""
+    from own_script import OWN_SCRIPT, expected
+    out = []
+    for cid, text in OWN_SCRIPT:
+        path = os.path.join(cache_dir, "own", f"{cid}.wav")
+        if os.path.exists(path):
+            out.append((cid, "own", path, expected(text)))
+    return out
 
 
 def real_audio(cache_dir: str) -> list[tuple[str, str, str, str]]:

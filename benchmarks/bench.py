@@ -30,12 +30,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
-from corpus import SR, _read_wav, build_audio, real_audio  # noqa: E402
+from corpus import SR, _read_wav, build_audio, own_audio, real_audio  # noqa: E402
 from metrics import sentence_breaks, wer  # noqa: E402
 
 DEFAULT_MODELS = ["large-v3-turbo", "distil-medium.en", "small.en", "small", "distil-small.en",
                   "base.en", "base", "tiny.en", "tiny"]
-REAL = ("sermon", "libri_clean", "libri_other")
+REAL = ("sermon", "libri_clean", "libri_other", "own")  # shown per set, not per clip
 WORDS_ONLY = ("libri_clean", "libri_other")  # references without punctuation
 HALLUCINATION = ("silence", "gap_clicks")     # scored as invented words, not WER
 GROUPS = [  # (column, variants)
@@ -184,8 +184,11 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
     from shuper_whisper import transcriber as tr
     from shuper_whisper.streaming import StreamingSession, silero_speech_spans
     from shuper_whisper.text_rules import clean, join
-    for key, value in tune.items():
-        setattr(StreamingSession, key, value)
+    from shuper_whisper import streaming
+    for key, value in tune.items():  # "JOIN_GAP" or "LocalAgreement.HOLD_WORDS"
+        cls, _, attr = key.rpartition(".")
+        setattr(getattr(streaming, cls) if cls else StreamingSession, attr,
+                int(value) if value == int(value) and attr.endswith("WORDS") else value)
     if gpu:
         tr.select_compute("auto")  # loads the CUDA runtime DLLs
     peak = _PeakGpu() if gpu else None
@@ -365,13 +368,13 @@ def main():
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--compute", default=None, help="default: int8_float16 on GPU, int8 on CPU")
-    parser.add_argument("--set", default="all", choices=["all", "synthetic", "real"],
-                        help="real = the asr-shootout clips (see extract_real.py)")
+    parser.add_argument("--set", default="all", choices=["all", "synthetic", "real", "own"],
+                        help="real = the asr-shootout clips (extract_real.py); own = your voice (record.py)")
     parser.add_argument("--clips", nargs="+", help="only clips whose id starts with one of these")
     parser.add_argument("--variants", nargs="+", help="only these variants (david, sermon, libri_other...)")
     parser.add_argument("--skip-live", action="store_true")
     parser.add_argument("--tune", nargs="+", default=[], metavar="NAME=VALUE",
-                        help="override StreamingSession settings, e.g. JOIN_GAP=0.4")
+                        help="override streaming settings, e.g. JOIN_GAP=0.4 or LocalAgreement.HOLD_WORDS=1")
     parser.add_argument("--label", default="", help="added to the results file name")
     parser.add_argument("--summarise", metavar="RAW_DIR",
                         help="rewrite the summary from a finished run's raw JSON")
@@ -394,6 +397,8 @@ def main():
         items += build_audio(cache)
     if args.set in ("all", "real"):
         items += real_audio(cache)
+    if args.set in ("all", "own"):
+        items += own_audio(cache)
     if args.clips:
         items = [i for i in items if i[0].startswith(tuple(args.clips))]
     if args.variants:
