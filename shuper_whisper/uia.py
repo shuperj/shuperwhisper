@@ -27,6 +27,11 @@ _user32.GetWindowThreadProcessId.argtypes = (wt.HWND, ctypes.c_void_p)
 _user32.GetForegroundWindow.restype = wt.HWND
 _local = threading.local()
 _reported: set[str] = set()
+# Chromium stands U+FFFC in for embedded objects (other inputs, images) and
+# editors pad empty lines with zero-width characters; none of it is text.
+_INVISIBLE = dict.fromkeys(map(ord, "\ufffc\u200b\u200c\u200d\u2060\ufeff"))
+# contenteditable fields hold a trailing space as a no-break space.
+_INVISIBLE[0xA0] = " "
 
 
 class _Worker:
@@ -101,6 +106,13 @@ def _text_before_caret_of(element) -> str | None:
                               mod.TextPatternRangeEndpoint_Start)
     caret.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_Start, mod.TextUnit_Character,
                              -_CONTEXT_CHARS)
+    # Chromium lets the range run out of the field into the rest of the page
+    # (other fields, placeholders, labels); only the field's own text counts.
+    document = text_pattern.DocumentRange
+    if caret.CompareEndpoints(mod.TextPatternRangeEndpoint_Start, document,
+                              mod.TextPatternRangeEndpoint_Start) < 0:
+        caret.MoveEndpointByRange(mod.TextPatternRangeEndpoint_Start, document,
+                                  mod.TextPatternRangeEndpoint_Start)
     return caret.GetText(-1)
 
 
@@ -174,10 +186,10 @@ def _classic_edit_before_caret_of(hwnd) -> str | None:
 def text_before_caret(timeout: float = 0.3) -> str | None:
     """Up to 200 characters before the caret, "" for an empty field, None if unknown."""
     text = _run(_text_before_caret, timeout)
-    if text is not None:
-        return text
-    _foreground, info = gui_thread_info()
-    return _classic_edit_before_caret_of(info.hwndFocus) if info and info.hwndFocus else None
+    if text is None:
+        _foreground, info = gui_thread_info()
+        text = _classic_edit_before_caret_of(info.hwndFocus) if info and info.hwndFocus else None
+    return None if text is None else text.translate(_INVISIBLE)
 
 
 def _caret_bounds_of(element):

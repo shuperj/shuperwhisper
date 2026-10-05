@@ -47,6 +47,12 @@ def _sentence_end(word: str) -> str:
     return word[len(word.rstrip(_SENTENCE_END)):]
 
 
+def _trailing_mark(word: str) -> str:
+    """Any trailing punctuation: what a re-read may put in place of a held
+    full stop ("Alright." -> "Alright,")."""
+    return word[len(word.rstrip(_SENTENCE_END + ",;:")):]
+
+
 class LocalAgreement:
     # Share of the committed characters a re-worded hypothesis must still
     # contain before we trust it to tell us where the new words start.
@@ -70,7 +76,7 @@ class LocalAgreement:
         n = len(self._stable_words)
         if not self._held or n == 0 or n > len(rebased):
             return []
-        end = _sentence_end(rebased[n - 1])
+        end = _trailing_mark(rebased[n - 1])
         return [end] if end else []
 
     @property
@@ -109,11 +115,15 @@ class LocalAgreement:
             total += len(w)
             if total >= end_b:
                 # Committed words keep their wording, but the boundary word's
-                # sentence mark follows the new hypothesis.
+                # punctuation follows the new hypothesis.
                 last = self._stable_words[-1]
-                last = last[:len(last) - len(_sentence_end(last))] + _sentence_end(words[i])
+                last = last[:len(last) - len(_trailing_mark(last))] + _trailing_mark(words[i])
                 return self._stable_words[:-1] + [last] + list(words[i + 1:])
         return list(self._stable_words)
+
+    @property
+    def held(self) -> bool:
+        return self._held
 
     @property
     def stable_words(self) -> list[str]:
@@ -184,12 +194,19 @@ class LocalAgreement:
         rebased = self._rebase(words) if words else None
         if rebased is None:
             rebased = self._prev
-        new_words = rebased[len(self._stable_words):]
+        n = len(self._stable_words)
+        new_words = rebased[n:]
         pending = self._pending_end(rebased)
-        if self._held and not pending and not new_words:
-            # Nothing was said after the held mark; a re-read of just that
-            # fragment often drops it, but the sentence did end there.
-            pending = [self._held_mark]
+        if not pending and not new_words:
+            if self._held:
+                # Nothing was said after the held mark; a re-read of just that
+                # fragment often drops it, but the sentence did end there.
+                pending = [self._held_mark]
+            elif words and n:
+                # An utterance can close without a full stop that a careful
+                # re-read of its last words finds.
+                end = _sentence_end(rebased[n - 1])
+                pending = [end] if end else []
         rest = pending + new_words
         self.reset()
         return rest
@@ -213,6 +230,10 @@ class StreamingSession:
     # VAD pads speech and word timestamps run early: speech has to end this
     # far past the carried words to count as new.
     NEW_SPEECH_MARGIN = 0.4
+    # How often to look for the end of an utterance. VAD is cheap; decoding
+    # isn't, so it runs every ``interval``. Checking only at decodes missed
+    # pauses that ended between two of them.
+    POLL = 0.1
 
     def __init__(self, transcriber, read_audio: Callable[[], np.ndarray],
                  on_hypothesis: Callable[[Hypothesis], None],
@@ -244,6 +265,7 @@ class StreamingSession:
         self._gap_closed = True  # the pause after the carried words was shortened
         self._last_tentative = ""
         self._last_speech = clock()
+        self._next_decode = 0.0
         self._auto_stopped = False
 
     # -- control ---------------------------------------------------------------
@@ -348,12 +370,18 @@ class StreamingSession:
         if self._stop.is_set():
             return  # the final pass in _run() decodes what's left
         now = self._clock()
+        if not spans and self._carry_end and not self._gap_closed:
+            # VAD often misses a lone carried word (its audio starts abruptly),
+            # but we know it's there: keep waiting for new speech.
+            spans = [(0, self._carry_end)]
         if not spans:
             if self._agreement.stable_count or self._last_tentative:
                 # Speech vanished (VAD dropout or it was noise): close the
-                # utterance so stale agreement can't swallow the next one.
+                # utterance so stale agreement can't swallow the next one, and
+                # drop its audio, now committed, so it isn't decoded again.
                 self._emit(self._agreement.flush(), [], final=True)
                 self._carry_end = 0
+                self._buffer = self._buffer[-int(0.3 * SAMPLE_RATE):]
             if len(self._buffer) > 2 * SAMPLE_RATE:
                 self._buffer = self._buffer[-SAMPLE_RATE // 2:]
             if not self._auto_stopped and now - self._last_speech >= self.AUTO_STOP:
@@ -365,16 +393,20 @@ class StreamingSession:
             return
         speech_end = spans[-1][1]
         silence_after = (len(self._buffer) - speech_end) / SAMPLE_RATE
-        self._last_speech = now - silence_after
         if speech_end <= self._carry_end + self._margin:
             # Only the carried-over words so far: wait for new speech, and
-            # don't let the silence after them pile up.
+            # don't let the silence after them pile up. (They aren't new
+            # speech, so the auto-stop clock keeps running.)
             limit = speech_end + SAMPLE_RATE // 2
             if len(self._buffer) > limit + SAMPLE_RATE:
                 # keep the newest 0.3 s: speech may be starting that VAD hasn't flagged yet
                 self._buffer = np.concatenate([self._buffer[:limit],
                                                self._buffer[-int(0.3 * SAMPLE_RATE):]])
+            if not self._auto_stopped and now - self._last_speech >= self.AUTO_STOP:
+                self._auto_stopped = True
+                self._on_auto_stop()
             return
+        self._last_speech = now - silence_after
         if len(self._buffer) >= self.MAX_UTTERANCE * SAMPLE_RATE and silence_after < self.END_SILENCE:
             self._cut_at_cap()
             return
@@ -382,17 +414,24 @@ class StreamingSession:
             timed = self._decode(timestamps=True)
             self._close_utterance(timed, len(timed))
             return
+        if now < self._next_decode:
+            return
         words = self._decode()
+        self._next_decode = self._clock() + self._interval
         newly, tentative = self._agreement.update(words)
         self._emit(newly, tentative)
 
     def _run(self) -> None:
         error: Optional[str] = None
         try:
-            while not self._stop.wait(self._interval):
+            while not self._stop.wait(min(self.POLL, self._interval)):
                 self._tick()
             spans = self._close_gap(self._append_audio())
             if spans and spans[-1][1] > self._carry_end + self._margin:
+                self._emit(self._agreement.flush(self._decode(beam_size=5)), [], final=True)
+            elif self._carry_end and not self._agreement.held:
+                # Nothing new, and the last utterance closed without a
+                # sentence mark: re-read its carried words carefully.
                 self._emit(self._agreement.flush(self._decode(beam_size=5)), [], final=True)
             else:
                 # nothing new since the last utterance closed: its held

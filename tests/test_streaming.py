@@ -256,3 +256,70 @@ def test_held_full_stop_survives_a_final_reread_that_drops_it():
     la.commit_all("if anything changes.".split())
     la.seed(["anything", "changes."])
     assert la.flush(["anything", "changes"]) == ["."]
+
+
+def test_carried_word_missed_by_vad_is_not_typed_again():
+    ticks = [
+        (0.4, [(0, 6400)]),
+        (1.2, [(0, 6400)]),                    # pause: utterance ends at "Alright."
+        (0.4, []),                             # VAD misses the lone carried word
+        (0.4, [(16000, 22400)]),               # new speech
+        (0.4, [(16000, 28800)]),
+    ]
+    decodes = [["Alright."], ["Alright."],
+               ["All", "right,", "so", "I'm"], ["All", "right,", "so", "I'm", "testing"]]
+    _s, hyps, _f, _a = run(ticks, decodes)
+    typed = "".join(h.stable_delta + " " for h in hyps)
+    assert "All right" not in typed and "All right" not in " ".join(h.tentative for h in hyps)
+    assert not any(h.final for h in hyps[:-1])            # the "." stayed revisable
+    assert hyps[-1].final
+
+
+def test_full_stop_can_become_a_comma():
+    la = LocalAgreement()
+    la.commit_all(["Alright."])
+    la.seed(["Alright."])
+    newly, tentative = la.update(["All", "right,", "so", "I'm"])
+    assert tentative[:2] == [",", "so"]
+
+
+def test_vad_dropout_drops_the_committed_audio():
+    ticks = [(0.4, [(0, 6400)]), (0.4, [(0, 12800)]), (0.4, [])]
+    decodes = [["how", "are"], ["how", "are", "you"]]
+    s, _h, _f, _a = run(ticks, decodes)
+    assert len(s._buffer) <= int(0.3 * SR)
+
+
+def test_auto_stop_while_only_carried_words_wait():
+    ticks = [(0.4, [(0, 6400)]), (1.2, [(0, 6400)])] + [(0.4, [(0, 6400)])] * 80
+    decodes = [["done."], ["done."]]
+    _s, _h, _f, auto = run(ticks, decodes)
+    assert auto == [True]
+
+
+
+def test_polls_for_silence_between_decodes():
+    clock = Clock()
+    s = StreamingSession(transcriber=FakeTranscriber([["one"], ["one"]]),
+                         read_audio=lambda: np.full(int(0.1 * SR), 0.1, np.float32),
+                         on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None, interval=0.4,
+                         speech_spans=lambda a: [(0, len(a))], clock=clock)
+    s._tick()
+    assert len(s._transcriber.calls) == 1
+    clock.t += 0.1
+    s._tick()                                    # too soon to decode again
+    assert len(s._transcriber.calls) == 1
+    clock.t += 0.4
+    s._tick()
+    assert len(s._transcriber.calls) == 2
+
+
+def test_final_reread_can_add_a_missing_full_stop():
+    la = LocalAgreement()
+    la.commit_all("it seems to work".split())
+    la.seed(["to", "work"])
+    assert la.flush(["to", "work."]) == ["."]
+    la.commit_all("it seems to work".split())
+    la.seed(["to", "work"])
+    assert la.flush(["to", "work"]) == []
