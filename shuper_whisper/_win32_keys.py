@@ -2,6 +2,7 @@
 
 import ctypes
 import ctypes.wintypes
+import time
 
 user32 = ctypes.windll.user32
 
@@ -141,19 +142,137 @@ def is_modifier_down(modifier_name: str) -> bool:
     return any(is_key_down(vk) for vk in vks)
 
 
-def send_combo(*vk_codes: int) -> None:
-    """Simulate a key combination (press all, release in reverse)."""
-    for vk in vk_codes:
-        user32.keybd_event(vk, 0, 0, 0)
-    for vk in reversed(vk_codes):
-        user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
+# --- SendInput ---------------------------------------------------------------
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_UNICODE = 0x0004
+VK_BACK = 0x08
+VK_RETURN = 0x0D
+# Stamped into dwExtraInfo so our own keystrokes can be told apart from the user's.
+SHUPER_INPUT_TAG = 0x53575057
 
 
-# Common VK constants for direct use
-VK_CONTROL = 0x11
-VK_SHIFT = 0x10
-VK_MENU = 0x12  # Alt
-VK_HOME = 0x24
-VK_RIGHT = 0x27
-VK_C = 0x43
-VK_V = 0x56
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [("wVk", ctypes.wintypes.WORD), ("wScan", ctypes.wintypes.WORD),
+                ("dwFlags", ctypes.wintypes.DWORD), ("time", ctypes.wintypes.DWORD),
+                ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [("dx", ctypes.wintypes.LONG), ("dy", ctypes.wintypes.LONG),
+                ("mouseData", ctypes.wintypes.DWORD), ("dwFlags", ctypes.wintypes.DWORD),
+                ("time", ctypes.wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", ctypes.wintypes.DWORD), ("wParamL", ctypes.wintypes.WORD),
+                ("wParamH", ctypes.wintypes.WORD)]
+
+
+class _INPUTUNION(ctypes.Union):
+    _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [("type", ctypes.wintypes.DWORD), ("union", _INPUTUNION)]
+
+
+user32.SendInput.argtypes = (ctypes.wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+user32.SendInput.restype = ctypes.wintypes.UINT
+
+
+class InjectionBlocked(RuntimeError):
+    """Windows refused our keystrokes (usually an elevated target window)."""
+
+
+def _key(vk: int = 0, scan: int = 0, flags: int = 0) -> INPUT:
+    return INPUT(type=INPUT_KEYBOARD, union=_INPUTUNION(ki=KEYBDINPUT(
+        wVk=vk, wScan=scan, dwFlags=flags, time=0, dwExtraInfo=SHUPER_INPUT_TAG)))
+
+
+def text_to_inputs(text: str, backspaces: int = 0) -> list[INPUT]:
+    events: list[INPUT] = []
+    for _ in range(backspaces):
+        events += [_key(vk=VK_BACK), _key(vk=VK_BACK, flags=KEYEVENTF_KEYUP)]
+    for ch in text:
+        if ch == "\r":
+            continue
+        if ch == "\n":
+            events += [_key(vk=VK_RETURN), _key(vk=VK_RETURN, flags=KEYEVENTF_KEYUP)]
+            continue
+        data = ch.encode("utf-16-le")
+        for i in range(0, len(data), 2):
+            unit = int.from_bytes(data[i:i + 2], "little")
+            events += [_key(scan=unit, flags=KEYEVENTF_UNICODE),
+                       _key(scan=unit, flags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)]
+    return events
+
+
+kernel32 = ctypes.windll.kernel32
+advapi32 = ctypes.windll.advapi32
+kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+kernel32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
+kernel32.CloseHandle.argtypes = (ctypes.wintypes.HANDLE,)
+advapi32.OpenProcessToken.argtypes = (ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD,
+                                      ctypes.POINTER(ctypes.wintypes.HANDLE))
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_TOKEN_QUERY = 0x0008
+_TOKEN_ELEVATION = 20
+
+
+def _is_elevated(process) -> bool:
+    token = ctypes.wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, _TOKEN_QUERY, ctypes.byref(token)):
+        return False
+    try:
+        elevation, size = ctypes.wintypes.DWORD(), ctypes.wintypes.DWORD()
+        ok = advapi32.GetTokenInformation(token, _TOKEN_ELEVATION, ctypes.byref(elevation),
+                                          ctypes.sizeof(elevation), ctypes.byref(size))
+        return bool(ok and elevation.value)
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def foreground_blocks_input() -> bool:
+    """True when the foreground app is elevated and we aren't: UIPI then drops
+    our keystrokes, and SendInput doesn't reliably say so."""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return False
+    pid = ctypes.wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    process = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+    if not process:
+        return False  # can't tell; try anyway
+    try:
+        target_elevated = _is_elevated(process)
+    finally:
+        kernel32.CloseHandle(process)
+    return target_elevated and not _is_elevated(kernel32.GetCurrentProcess())
+
+
+def send_text(text: str, backspaces: int = 0) -> None:
+    """Type ``text`` (after ``backspaces``) into the focused control in one
+    SendInput call, so the user's own keystrokes can't interleave."""
+    events = text_to_inputs(text, backspaces)
+    if not events:
+        return
+    if foreground_blocks_input():
+        raise InjectionBlocked("Can't type into admin windows unless ShuperWhisper runs as admin")
+    array = (INPUT * len(events))(*events)
+    if user32.SendInput(len(events), array, ctypes.sizeof(INPUT)) != len(events):
+        raise InjectionBlocked("Windows blocked typing into this window (is it running as admin?)")
+
+
+_MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)  # Shift, Ctrl, Alt, LWin, RWin
+
+
+def wait_for_modifiers_released(timeout: float = 1.0) -> bool:
+    """Wait until no modifier is physically held, so typed text isn't read as
+    shortcuts. Returns False if they're still down after ``timeout``."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(is_key_down(vk) for vk in _MODIFIER_VKS):
+            return True
+        time.sleep(0.01)
+    return False

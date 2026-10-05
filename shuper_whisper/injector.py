@@ -1,86 +1,51 @@
-"""Text injection via clipboard and simulated paste."""
+"""Types text at the caret of whatever control has focus.
 
-import time
+Uses SendInput unicode keystrokes, so the clipboard is never touched. Context
+for spacing/capitalisation comes from UI Automation, falling back to what we
+last typed into the same window.
+"""
 
-import pyperclip
+from typing import Callable, Optional
 
-from ._win32_keys import VK_C, VK_CONTROL, VK_HOME, VK_RIGHT, VK_SHIFT, VK_V, send_combo
-from .smart_text import process_text
+from . import uia
+from ._win32_keys import send_text, user32, wait_for_modifiers_released
+from .text_rules import join
+
+_HISTORY_CHARS = 200
 
 
 class TextInjector:
-    """Injects transcribed text into the currently focused text field."""
-
     def __init__(
         self,
-        paste_delay: float = 0.1,
-        smart_spacing: bool = True,
-        bullet_mode: bool = False,
-        email_mode: bool = False,
+        send: Callable[..., None] = send_text,
+        read_context: Callable[[], Optional[str]] = uia.text_before_caret,
+        foreground: Callable[[], int] = user32.GetForegroundWindow,
+        wait_modifiers: Callable[[], bool] = wait_for_modifiers_released,
     ):
-        self._paste_delay = paste_delay
-        self.smart_spacing = smart_spacing
-        self.bullet_mode = bullet_mode
-        self.email_mode = email_mode
+        self._send = send
+        self._read_context = read_context
+        self._foreground = foreground
+        self._wait_modifiers = wait_modifiers
+        self._last_hwnd: Optional[int] = None
+        self._last_typed = ""
 
-    def _probe_context(self) -> str | None:
-        """Try to read text preceding the cursor in the active field.
+    def context(self) -> Optional[str]:
+        before = self._read_context()
+        if before is not None:
+            return before
+        if self._last_typed and self._foreground() == self._last_hwnd:
+            return self._last_typed
+        return None
 
-        Uses Shift+Home to select to start of line, copies, then restores.
-        Returns None if probing fails.
-        """
-        if not (self.smart_spacing or self.bullet_mode):
-            return None
-
-        try:
-            # Save current clipboard
-            original_clip = pyperclip.paste()
-
-            # Select from cursor to start of line and copy
-            pyperclip.copy("")
-            time.sleep(0.02)
-            send_combo(VK_SHIFT, VK_HOME)
-            time.sleep(0.05)
-            send_combo(VK_CONTROL, VK_C)
-            time.sleep(0.05)
-
-            context = pyperclip.paste()
-
-            # Deselect (move cursor back to original position)
-            send_combo(VK_RIGHT)
-            time.sleep(0.02)
-
-            # Restore original clipboard
-            pyperclip.copy(original_clip)
-
-            return context if context else None
-        except Exception:
-            return None
-
-    def inject(self, text: str) -> None:
-        """Process and inject transcribed text into the focused field.
-
-        Probes context if smart features are enabled, then applies
-        smart spacing/bullet/email formatting before pasting.
-
-        Args:
-            text: The transcribed text to inject.
-        """
+    def inject(self, text: str) -> str:
+        """Type cleaned ``text`` at the caret. Returns exactly what was typed."""
         if not text:
-            return
-
-        has_smart_features = self.smart_spacing or self.bullet_mode or self.email_mode
-
-        if has_smart_features:
-            context = self._probe_context()
-            text = process_text(
-                context=context,
-                text=text,
-                smart_spacing=self.smart_spacing,
-                bullet_mode=self.bullet_mode,
-                email_mode=self.email_mode,
-            )
-
-        pyperclip.copy(text)
-        time.sleep(self._paste_delay)
-        send_combo(VK_CONTROL, VK_V)
+            return ""
+        self._wait_modifiers()
+        typed = join(text, self.context())
+        self._send(typed)
+        hwnd = self._foreground()
+        if hwnd != self._last_hwnd:
+            self._last_hwnd, self._last_typed = hwnd, ""
+        self._last_typed = (self._last_typed + typed)[-_HISTORY_CHARS:]
+        return typed
