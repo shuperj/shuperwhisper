@@ -6,6 +6,7 @@ disappears -- e.g. when Voicemeeter restarts. So config stores a device by name
 and host API, and this module turns that reference into a current index.
 """
 
+import threading
 from dataclasses import asdict, dataclass, replace
 
 import sounddevice as sd
@@ -39,10 +40,35 @@ class InputDevice:
         return data
 
 
-def refresh() -> None:
-    """Re-scan devices. PortAudio otherwise caches the list from startup."""
-    sd._terminate()
-    sd._initialize()
+# Re-scanning restarts PortAudio, which would free every open stream, so it
+# only happens while none is open.
+_streams_lock = threading.Lock()
+_open_streams = 0
+
+
+def stream_opened() -> None:
+    global _open_streams
+    with _streams_lock:
+        _open_streams += 1
+
+
+def stream_closed() -> None:
+    global _open_streams
+    with _streams_lock:
+        _open_streams = max(0, _open_streams - 1)
+
+
+def refresh() -> bool:
+    """Re-scan devices (PortAudio otherwise caches the list from startup).
+
+    Returns False, doing nothing, while any stream is open.
+    """
+    with _streams_lock:
+        if _open_streams:
+            return False
+        sd._terminate()
+        sd._initialize()
+        return True
 
 
 def _inputs(devices=None, hostapis=None) -> list[InputDevice]:
@@ -127,12 +153,17 @@ def check(ref) -> str | None:
     try:
         index = resolve(ref)
         info = sd.query_devices(index, "input")
-        sd.check_input_settings(
-            device=index,
-            channels=max(1, min(int(info["max_input_channels"]), 2)),
-            samplerate=info["default_samplerate"],
-            dtype="float32",
-        )
+        channels = max(1, min(int(info["max_input_channels"]), 2))
+        try:
+            sd.check_input_settings(device=index, channels=channels,
+                                    samplerate=info["default_samplerate"], dtype="float32")
+        except sd.PortAudioError:
+            # Same fallback AudioRecorder uses: let WASAPI convert to 16 kHz.
+            if "WASAPI" not in sd.query_hostapis(info["hostapi"])["name"]:
+                raise
+            sd.check_input_settings(device=index, channels=channels, samplerate=16000,
+                                    dtype="float32",
+                                    extra_settings=sd.WasapiSettings(auto_convert=True))
         return None
     except Exception as e:  # PortAudioError, DeviceNotFoundError, ValueError
         return str(e)

@@ -145,11 +145,14 @@ class WindowAPI:
                 problem = audio_devices.check(config.input_device)
                 if problem:
                     return {'success': False, 'error': f"Can't use that microphone: {problem}"}
-            save_config(config)
+            # Apply first, save only what worked, so a bad setting isn't
+            # waiting to fail again on the next launch.
             if self._app:
-                self._app.reload_config(config)
+                if not self._app.reload_config(config):
+                    return {'success': False, 'error': 'Finish dictating first, then try again.'}
                 if self._app.error:
                     return {'success': False, 'error': self._app.error}
+            save_config(config)
             return {'success': True, 'config': config.to_dict()}
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -254,6 +257,19 @@ class WindowAPI:
 
         if not hasattr(self._app, 'recorder') or not hasattr(self._app, 'transcriber'):
             return {'success': False, 'error': 'Recorder or transcriber not available'}
+
+        # Training records through the app's microphone: never alongside a
+        # dictation (or another training run).
+        lock = getattr(self._app, '_session_lock', None)
+        if lock is not None and not lock.acquire(blocking=False):
+            return {'success': False, 'error': 'Finish dictating first, then try again.'}
+        try:
+            return self._train(word)
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _train(self, word):
 
         def _push(data):
             """Push a training status event to React."""

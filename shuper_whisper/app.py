@@ -8,7 +8,7 @@ from typing import Callable, Optional
 
 import numpy as np
 
-from . import audio_devices
+from . import audio_devices, uia
 from ._win32_keys import InjectionBlocked
 from .audio import AudioRecorder
 from .config import AppConfig, load_config, save_config
@@ -25,8 +25,19 @@ STATE_PROCESSING = "processing"
 STATE_LOADING = "loading"
 STATE_ERROR = "error"
 
-# Below this RMS the recording is treated as silence (Whisper hallucinates on it).
+# If even the loudest 100 ms of a recording is below this RMS, it's silence
+# (Whisper hallucinates on silence).
 SILENCE_RMS_THRESHOLD = 0.005
+
+
+def is_silent(audio: Optional[np.ndarray]) -> bool:
+    if audio is None or len(audio) == 0:
+        return True
+    window = 1600  # 100 ms at 16 kHz
+    usable = len(audio) // window * window or len(audio)
+    frames = audio[:usable].reshape(-1, min(window, usable))
+    loudest = float(np.sqrt(np.mean(frames ** 2, axis=1)).max())
+    return loudest < SILENCE_RMS_THRESHOLD
 
 
 class ShuperWhisperApp:
@@ -100,7 +111,7 @@ class ShuperWhisperApp:
         try:
             if self.recorder.stream_error:
                 raise RuntimeError(self.recorder.stream_error)
-            if audio is None or float(np.sqrt(np.mean(audio ** 2))) < SILENCE_RMS_THRESHOLD:
+            if is_silent(audio):
                 self._set_state(STATE_IDLE)
                 return
             text = self.transcriber.transcribe(
@@ -122,6 +133,13 @@ class ShuperWhisperApp:
 
     def _start_level_monitoring(self) -> None:
         def _update():
+            if self.recorder.check_alive():
+                # Device vanished mid-dictation: end the session now rather
+                # than waiting for the second hotkey press.
+                self._level_timer = None
+                self.hotkey_manager.reset()
+                self._run_async(self._on_record_stop)
+                return
             if self.overlay.is_visible:
                 self.overlay.update_levels(self.recorder.get_levels(self.overlay.BAR_COUNT))
                 self._level_timer = threading.Timer(0.033, _update)
@@ -149,6 +167,7 @@ class ShuperWhisperApp:
         if self._running:
             return
         self._set_state(STATE_LOADING)
+        uia.warm_up()
         try:
             self._migrate_device()
             if not self.transcriber.loaded:
@@ -170,15 +189,35 @@ class ShuperWhisperApp:
             self.overlay.hide()
         self._running = False
 
-    def reload_config(self, new_config: AppConfig) -> None:
-        """Apply settings, touching only what changed. Never raises."""
-        old, self.config = self.config, new_config
+    @property
+    def busy(self) -> bool:
+        """A dictation is being recorded or typed."""
+        return self._session_lock.locked()
+
+    def reload_config(self, new_config: AppConfig) -> bool:
+        """Apply settings, touching only what differs from what's running.
+
+        Never raises. Returns False without changing anything while a
+        dictation is in progress.
+        """
+        if not self._session_lock.acquire(blocking=False):
+            return False
+        try:
+            self._apply_config(new_config)
+        finally:
+            self._session_lock.release()
+        return True
+
+    def _apply_config(self, new_config: AppConfig) -> None:
+        self.config = new_config
         self.dictionary.load()
         self.overlay.set_position(new_config.overlay_position)
         try:
-            if new_config.input_device != old.input_device:
+            # Compare with what's actually running, not the previous config:
+            # an earlier failed reload may have left them different.
+            if new_config.input_device != self.recorder.device_ref:
                 self.recorder = AudioRecorder(device_ref=new_config.input_device)
-            model_changed = (new_config.model_size, new_config.compute) != (old.model_size, old.compute)
+            model_changed = (new_config.model_size, new_config.compute) != self.transcriber.requested
             if model_changed or not self.transcriber.loaded:
                 self._set_state(STATE_LOADING)
                 self.transcriber = Transcriber(model_size=new_config.model_size,
@@ -186,7 +225,7 @@ class ShuperWhisperApp:
                                                compute=new_config.compute)
                 self.transcriber.load_model()
             self.transcriber.language = new_config.language
-            if new_config.hotkey != old.hotkey or not self.hotkey_manager.registered:
+            if new_config.hotkey != self.hotkey_manager.hotkey or not self.hotkey_manager.registered:
                 self.hotkey_manager.unregister()
                 self.hotkey_manager = self._make_hotkeys(new_config.hotkey)
                 self.hotkey_manager.register()

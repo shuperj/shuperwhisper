@@ -18,9 +18,9 @@ def test_ascii_char_is_unicode_down_up():
     assert down.dwExtraInfo == k.SHUPER_INPUT_TAG
 
 
-def test_newline_is_enter_and_cr_skipped():
+def test_newline_is_shift_enter_and_cr_skipped():
     events = k.text_to_inputs("\r\n")
-    assert [e.union.ki.wVk for e in events] == [k.VK_RETURN, k.VK_RETURN]
+    assert [e.union.ki.wVk for e in events] == [k.VK_LSHIFT, k.VK_RETURN, k.VK_RETURN, k.VK_LSHIFT]
 
 
 def test_astral_char_is_surrogate_pair():

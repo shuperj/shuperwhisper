@@ -93,3 +93,15 @@ class TestMigrate:
         ref = {"name": B1, "hostapi": None}
         assert ad.migrate(ref, DEVICES, HOSTAPIS) is ref
         assert ad.migrate(None, DEVICES, HOSTAPIS) is None
+
+
+def test_refresh_skipped_while_a_stream_is_open(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ad.sd, "_terminate", lambda: calls.append("t"))
+    monkeypatch.setattr(ad.sd, "_initialize", lambda: calls.append("i"))
+    ad.stream_opened()
+    try:
+        assert ad.refresh() is False and calls == []
+    finally:
+        ad.stream_closed()
+    assert ad.refresh() is True and calls == ["t", "i"]

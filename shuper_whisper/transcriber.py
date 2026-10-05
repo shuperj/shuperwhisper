@@ -10,6 +10,7 @@ from faster_whisper import WhisperModel
 
 # ctranslate2 >= 4.5 is built against CUDA 12 + cuDNN 9.
 _CUDA_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
+_added_dll_dirs: set[str] = set()
 
 
 def _bundled_model_path(model_size: str) -> str | None:
@@ -65,6 +66,9 @@ def _load_cuda_dlls() -> bool:
     cuDNN mid-inference, so this must succeed before we ever pick "cuda".
     """
     for path in _nvidia_dll_dirs():
+        if path in _added_dll_dirs:
+            continue
+        _added_dll_dirs.add(path)
         os.add_dll_directory(path)
         os.environ["PATH"] = path + os.pathsep + os.environ.get("PATH", "")
     try:
@@ -125,8 +129,25 @@ class Transcriber:
                 raise
             # Too-old GPU, out of VRAM, broken driver...: CPU still works.
             print(f"GPU model load failed ({e}); using CPU")
-            source = self._configure("cpu", "int8")
-            self._model = WhisperModel(source, device="cpu", compute_type="int8")
+            self._fall_back_to_cpu()
+
+    def _fall_back_to_cpu(self) -> None:
+        source = self._configure("cpu", "int8")
+        self._model = WhisperModel(source, device="cpu", compute_type="int8")
+
+    def _run_model(self, audio: np.ndarray, kwargs: dict) -> list:
+        """Run the model; a CUDA failure mid-session (another app grabbed the
+        VRAM, driver reset...) reloads on CPU and retries once."""
+        try:
+            segments, _info = self._model.transcribe(audio, **kwargs)
+            return list(segments)
+        except Exception as e:
+            if self._device != "cuda":
+                raise
+            print(f"GPU transcription failed ({e}); switching to CPU")
+            self._fall_back_to_cpu()
+            segments, _info = self._model.transcribe(audio, **kwargs)
+            return list(segments)
 
     def transcribe(self, audio: np.ndarray, initial_prompt: Optional[str] = None,
                    hotwords: Optional[str] = None) -> str:
@@ -144,10 +165,15 @@ class Transcriber:
             kwargs["initial_prompt"] = initial_prompt
         if hotwords:
             kwargs["hotwords"] = hotwords
-        segments, _info = self._model.transcribe(audio, **kwargs)
+        segments = self._run_model(audio, kwargs)
         # Segment texts carry their own leading space; strip and re-join so
         # boundaries get exactly one.
         return " ".join(t for t in (s.text.strip() for s in segments) if t)
+
+    @property
+    def requested(self) -> tuple[str, str]:
+        """(model size, compute preference) as configured, before "auto" resolves."""
+        return self._requested_size, self._compute_pref
 
     @property
     def loaded(self) -> bool:

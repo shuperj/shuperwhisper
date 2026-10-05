@@ -5,6 +5,7 @@ Windows mic-in-use indicator is only lit while you're dictating.
 """
 
 import threading
+import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -18,6 +19,7 @@ class AudioRecorder:
     TARGET_RATE = 16000
     BLOCK_SECONDS = 0.03
     _LEVEL_HISTORY = 60
+    STALL_SECONDS = 2.0  # no audio callback for this long while recording = dead device
 
     def __init__(self, device_ref=None, stream_factory: Optional[Callable] = None,
                  resolver: Optional[Callable] = None):
@@ -33,10 +35,12 @@ class AudioRecorder:
         self._levels: list[float] = []
         self._level_lock = threading.Lock()
         self.stream_error: Optional[str] = None
+        self._last_callback = 0.0
 
     # -- stream callbacks (PortAudio thread) ---------------------------------
 
     def _callback(self, indata, frames, time_info, status) -> None:
+        self._last_callback = time.monotonic()
         mono = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
         mono = np.ascontiguousarray(mono, dtype=np.float32)
         if len(mono):
@@ -89,19 +93,24 @@ class AudioRecorder:
         self.stream_error = None
         self._stopping = False
         try:
-            index = self._resolver(self._device_ref)
-        except audio_devices.DeviceNotFoundError:
-            audio_devices.refresh()  # it may have appeared since PortAudio last scanned
-            index = self._resolver(self._device_ref)
-        stream = self._open(index)
+            stream = self._open(self._resolver(self._device_ref))
+        except (audio_devices.DeviceNotFoundError, sd.PortAudioError):
+            # The device may have appeared, or been renumbered (Voicemeeter
+            # restart, Bluetooth), since PortAudio last scanned. Retry once.
+            if not audio_devices.refresh():
+                raise
+            stream = self._open(self._resolver(self._device_ref))
+        audio_devices.stream_opened()
         self._stream = stream
         self._recording = True
+        self._last_callback = time.monotonic()
         try:
             stream.start()
         except Exception:
             self._recording = False
             self._stream = None
             stream.close()
+            audio_devices.stream_closed()
             raise
 
     def stop_recording(self) -> Optional[np.ndarray]:
@@ -113,6 +122,7 @@ class AudioRecorder:
                 stream.stop()
             finally:
                 stream.close()
+                audio_devices.stream_closed()
         with self._lock:
             self._recording = False
             if self._resampler is not None:
@@ -137,3 +147,16 @@ class AudioRecorder:
     @property
     def is_recording(self) -> bool:
         return self._recording
+
+    @property
+    def device_ref(self):
+        return self._device_ref
+
+    def check_alive(self) -> Optional[str]:
+        """While recording: an error message if the device has stopped
+        delivering audio (unplugged, Voicemeeter restarted...), else None."""
+        if not self._recording or self._stopping:
+            return None
+        if not self.stream_error and time.monotonic() - self._last_callback > self.STALL_SECONDS:
+            self.stream_error = "The microphone stopped sending audio"
+        return self.stream_error

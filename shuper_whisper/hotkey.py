@@ -144,6 +144,10 @@ class HotkeyManager:
         self._active = False
 
     @property
+    def hotkey(self) -> str:
+        return self._hotkey_str
+
+    @property
     def active(self) -> bool:
         return self._active
 
