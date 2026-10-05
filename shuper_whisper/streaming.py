@@ -17,6 +17,7 @@ stop is taken back.
 """
 
 import difflib
+import itertools
 import re
 import threading
 import time
@@ -57,6 +58,7 @@ class LocalAgreement:
     # Share of the committed characters a re-worded hypothesis must still
     # contain before we trust it to tell us where the new words start.
     MIN_OVERLAP = 0.6
+    HOLD_WORDS = 1  # the newest words of a hypothesis are never committed (2 measured no better)
 
     def __init__(self):
         self.reset()
@@ -108,18 +110,24 @@ class LocalAgreement:
         blocks = [m for m in matcher.get_matching_blocks() if m.size]
         if not blocks or sum(m.size for m in blocks) < self.MIN_OVERLAP * len(a):
             return None
-        last = blocks[-1]
-        end_b = last.b + last.size + (len(a) - (last.a + last.size))
-        total = 0
-        for i, w in enumerate(normed):
-            total += len(w)
-            if total >= end_b:
-                # Committed words keep their wording, but the boundary word's
-                # punctuation follows the new hypothesis.
-                last = self._stable_words[-1]
-                last = last[:len(last) - len(_trailing_mark(last))] + _trailing_mark(words[i])
-                return self._stable_words[:-1] + [last] + list(words[i + 1:])
-        return list(self._stable_words)
+        # A stray one- or two-letter match far into the hypothesis (the "e"
+        # of "these" against the "e" of "eye") would make every new word look
+        # already committed.
+        last = ([m for m in blocks if m.size >= 3] or blocks)[-1]
+        # The words that match last line up; any committed words after them
+        # were re-worded one for one ("FDT" -> "avidity").
+        a_ends = list(itertools.accumulate(len(w) for w in committed))
+        b_ends = list(itertools.accumulate(len(w) for w in normed))
+        in_a = next(j for j, e in enumerate(a_ends) if e >= last.a + last.size)
+        in_b = next(j for j, e in enumerate(b_ends) if e >= last.b + last.size)
+        i = in_b + (n - 1 - in_a)
+        if i >= len(words):
+            return list(self._stable_words)
+        # Committed words keep their wording, but the boundary word's
+        # punctuation follows the new hypothesis.
+        last_word = self._stable_words[-1]
+        last_word = last_word[:len(last_word) - len(_trailing_mark(last_word))] + _trailing_mark(words[i])
+        return self._stable_words[:-1] + [last_word] + list(words[i + 1:])
 
     def fits(self, words: list[str]) -> bool:
         """Does this hypothesis contain the committed words?"""
@@ -175,9 +183,10 @@ class LocalAgreement:
             if _norm(a) != _norm(b):
                 break
             agree += 1
-        # Never commit the newest word: it carries Whisper's guess at how the
-        # buffer ends ("out." during a pause) and must stay revisable.
-        agree = min(agree, len(rebased) - 1)
+        # Never commit the newest words: they carry Whisper's guess at how
+        # the buffer ends ("out." during a pause, "FDT" for a word half heard)
+        # and must stay revisable.
+        agree = min(agree, len(rebased) - self.HOLD_WORDS)
         self._prev = rebased
         newly: list[str] = []
         if agree > n:
@@ -243,6 +252,7 @@ class StreamingSession:
     # isn't, so it runs every ``interval``. Checking only at decodes missed
     # pauses that ended between two of them.
     POLL = 0.1
+    BEAM = 1  # beam size of live passes (the final pass uses 5)
 
     def __init__(self, transcriber, read_audio: Callable[[], np.ndarray],
                  on_hypothesis: Callable[[Hypothesis], None],
@@ -305,11 +315,11 @@ class StreamingSession:
         parts = [self._prompt_fn() or "", " ".join(done)[-self.PROMPT_CHARS:]]
         return " ".join(p for p in parts if p) or None
 
-    def _decode(self, beam_size: int = 1, timestamps: bool = False):
+    def _decode(self, beam_size: Optional[int] = None, timestamps: bool = False):
         started = self._clock()
         result = self._transcriber.transcribe_words(
             self._buffer, initial_prompt=self._prompt(), hotwords=self._hotwords,
-            beam_size=beam_size, timestamps=timestamps)
+            beam_size=beam_size or self.BEAM, timestamps=timestamps)
         self._interval = max(self._base_interval, (self._clock() - started) * 1.2)
         return result
 
@@ -380,7 +390,7 @@ class StreamingSession:
                 return keep - i if end_t - begun <= self.SENTENCE_CARRY_SECONDS else 0
         return 0
 
-    def _decode_new(self, beam_size: int = 1, timestamps: bool = False, patient: bool = False):
+    def _decode_new(self, beam_size: Optional[int] = None, timestamps: bool = False, patient: bool = False):
         """Decode speech that follows carried words. If Whisper misheard them
         the first time (say it invented an ending), no new hypothesis contains
         them, every one looks contradictory, and the new speech would be lost:

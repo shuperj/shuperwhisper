@@ -413,3 +413,20 @@ def test_a_long_sentence_carries_only_its_last_words():
     timed = [(f"w{i}", float(i)) for i in range(1, 13)]   # one sentence, 12 s long
     s._close_utterance(timed, len(timed))
     assert len(s._agreement.stable_words) <= StreamingSession.CARRY_WORDS
+
+
+def test_stray_letter_match_does_not_swallow_new_words():
+    # "these" committed; the re-read says "this struck my eye". A one-letter
+    # match of "these"'s final e with "eye" made all of it look committed.
+    la = LocalAgreement()
+    la.commit_all("populist pride, all these".split())
+    la.seed("all these".split())
+    assert la.flush("all this struck my eye.".split()) == ["struck", "my", "eye."]
+
+
+def test_misheard_committed_word_is_not_extended_into_the_next():
+    # "FDT" was committed for "avidity": the new words start after it.
+    la = LocalAgreement()
+    la.commit_all("Wanton FDT".split())
+    la.seed("Wanton FDT".split())
+    assert la.flush("Wanton avidity, bilious envy.".split()) == ["bilious", "envy."]
