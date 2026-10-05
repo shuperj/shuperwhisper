@@ -132,6 +132,37 @@ def text_before_caret(timeout: float = 0.3) -> str | None:
     return _classic_edit_before_caret_of(info.hwndFocus) if info and info.hwndFocus else None
 
 
+def _caret_bounds_of(element):
+    _uia, mod = _client()
+    pattern = element.GetCurrentPattern(_UIA_TEXT_PATTERN_ID)
+    if not pattern:
+        return None
+    selection = pattern.QueryInterface(mod.IUIAutomationTextPattern).GetSelection()
+    if not selection or selection.Length == 0:
+        return None
+    rng = selection.GetElement(0).Clone()
+    # A collapsed range usually has no rectangle; measure the character before it.
+    rng.MoveEndpointByRange(mod.TextPatternRangeEndpoint_End, rng, mod.TextPatternRangeEndpoint_Start)
+    rng.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_Start, mod.TextUnit_Character, -1)
+    rects = list(rng.GetBoundingRectangles() or ())
+    if len(rects) < 4:
+        return None
+    left, top, width, height = rects[-4:]
+    right = int(left + width)
+    return (right, int(top), right + 1, int(top + height))
+
+
+def _caret_bounds():
+    uia, _mod = _client()
+    element = uia.GetFocusedElement()
+    return _caret_bounds_of(element) if element else None
+
+
+def caret_bounds(timeout: float = 0.15):
+    """Screen rect just after the character before the caret, or None."""
+    return _run(_caret_bounds, timeout)
+
+
 def focused_element_id(timeout: float = 0.3) -> tuple | None:
     """UIA RuntimeId of the focused element: identifies "the same field"."""
     return _run(_focused_element_id, timeout)
