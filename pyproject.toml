@@ -8,13 +8,14 @@ version = "1.2.2"
 description = "Hotkey-based voice dictation for Windows using faster-whisper"
 requires-python = ">=3.12"
 dependencies = [
-    "faster-whisper",
-    "sounddevice",
+    "faster-whisper>=1.2",
+    "ctranslate2>=4.5",
+    "sounddevice>=0.5",
+    "soxr>=0.5",
+    "comtypes>=1.4",
     "numpy",
-    "pyperclip",
     "pystray>=0.19.5",
     "Pillow>=10.0",
-    "anthropic>=0.39.0",
     "pywebview>=5.0.0",
 ]
 
@@ -30,6 +31,11 @@ dev = [
     "pytest-mock",
     "pytest-cov",
     "pyinstaller",
+]
+gpu = [
+    # Same versions the in-app GPU setup downloads (gpu_runtime.WHEELS, stage 3).
+    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cudnn-cu12==9.27.0.42",
 ]
 
 [tool.pytest.ini_options]
