@@ -144,3 +144,14 @@ class TestJoin:
 
     def test_empty_text(self):
         assert join("", "Hello") == ""
+
+
+class TestPartial:
+    def test_partial_keeps_trailing_comma(self):
+        assert clean("I think,", final=False) == "I think,"
+
+    def test_final_drops_trailing_comma(self):
+        assert clean("I think,") == "I think"
+
+    def test_partial_dash_becomes_trailing_comma(self):
+        assert clean("I went home —", final=False) == "I went home,"

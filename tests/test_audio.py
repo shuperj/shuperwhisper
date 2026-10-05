@@ -122,6 +122,18 @@ class TestCapture:
         streams[0].feed(sine(48000, 0.03))
         assert r.get_levels(5)[-1] > 0
 
+    def test_read_new_returns_only_fresh_audio(self, device_info):
+        streams = []
+        r = make(streams)
+        r.start_recording()
+        for _ in range(3):
+            streams[0].feed(sine(48000, 0.1))
+        first = r.read_new()
+        assert abs(len(first) - 4800) < 600
+        assert len(r.read_new()) == 0
+        streams[0].feed(sine(48000, 0.3))
+        assert len(r.read_new()) > 0
+
     def test_unexpected_stream_end_sets_error(self, device_info):
         streams = []
         r = make(streams)

@@ -73,7 +73,7 @@ def _ellipsis(match: re.Match) -> str:
     return " " if following.islower() else ". "
 
 
-def _tidy(text: str) -> str:
+def _tidy(text: str, final: bool = True) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
     text = re.sub(rf" +([{_PUNCT_CLASS}])", r"\1", text)
@@ -81,20 +81,23 @@ def _tidy(text: str) -> str:
     text = re.sub(r",\s*([.;:!?])", r"\1", text)
     text = re.sub(r"([.;:!?]),", r"\1", text)
     text = re.sub(r"^[ ,]+", "", text)
-    text = re.sub(r"[ ,]+$", "", text)
+    text = re.sub(r"[ ,]+$", "", text) if final else text.rstrip(" ")
     return text
 
 
-def clean(text: str, replacements: Iterable[tuple[str, str]] = ()) -> str:
+def clean(text: str, replacements: Iterable[tuple[str, str]] = (), final: bool = True) -> str:
     """Tidy one transcription: replacements, spoken commands, fillers, dashes,
-    ellipses, spacing, and capitalisation after sentence ends."""
+    ellipses, spacing, and capitalisation after sentence ends.
+
+    With ``final=False`` (a chunk of a longer stream) trailing commas are kept.
+    """
     text = _apply_replacements(text, replacements)
     text = _apply_commands(text)
     text = _FILLER_RE.sub("", text)
     text = _DASH_RE.sub(", ", text)
     text = _TRAILING_ELLIPSIS_RE.sub("", text)
     text = _ELLIPSIS_RE.sub(_ellipsis, text)
-    text = _tidy(text)
+    text = _tidy(text, final)
     return _SENTENCE_START_RE.sub(lambda m: m.group(1) + m.group(2).upper(), text)
 
 

@@ -29,6 +29,7 @@ class AudioRecorder:
         self._recording = False
         self._stopping = False
         self._chunks: list[np.ndarray] = []
+        self._read_pos = 0
         self._lock = threading.Lock()
         self._levels: list[float] = []
         self._level_lock = threading.Lock()
@@ -84,6 +85,7 @@ class AudioRecorder:
         """Open the configured device and start capturing. Raises on failure."""
         with self._lock:
             self._chunks = []
+            self._read_pos = 0
         with self._level_lock:
             self._levels.clear()
         self.stream_error = None
@@ -124,6 +126,13 @@ class AudioRecorder:
         if not chunks:
             return None
         return np.concatenate(chunks).astype(np.float32)
+
+    def read_new(self) -> np.ndarray:
+        """16 kHz audio captured since the previous call (for live decoding)."""
+        with self._lock:
+            fresh = self._chunks[self._read_pos:]
+            self._read_pos = len(self._chunks)
+        return np.concatenate(fresh) if fresh else np.zeros(0, np.float32)
 
     # -- levels -----------------------------------------------------------------
 
