@@ -72,6 +72,7 @@ function NvidiaGpuName(): String;
 var
   Locator, Service, Items, Item: Variant;
   I: Integer;
+  Name: String;
 begin
   Result := '';
   try
@@ -81,9 +82,10 @@ begin
     for I := 0 to Items.Count - 1 do
     begin
       Item := Items.ItemIndex(I);
-      if Pos('NVIDIA', Uppercase(Item.Name)) > 0 then
+      Name := Item.Name;  { a Variant: Uppercase() needs a String }
+      if Pos('NVIDIA', Uppercase(Name)) > 0 then
       begin
-        Result := Item.Name;
+        Result := Name;
         Exit;
       end;
     end;
