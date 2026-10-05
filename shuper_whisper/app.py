@@ -9,14 +9,14 @@ from typing import Callable, Optional
 import numpy as np
 
 from . import audio_devices, uia
-from ._win32_keys import InjectionBlocked
+from ._win32_keys import MODIFIER_VK_MAP, InjectionBlocked, get_vk
 from .audio import AudioRecorder
 from .config import AppConfig, load_config, save_config
 from .dictionary import WordDictionary
-from .hotkey import HotkeyManager
-from .injector import TextInjector
-from .overlay import RecordingOverlay
-from .text_rules import clean
+from .hotkey import HotkeyManager, parse_hotkey
+from .live_writer import LiveWriter
+from .overlay import CaretIndicator
+from .streaming import Hypothesis, StreamingSession
 from .transcriber import Transcriber
 
 STATE_IDLE = "idle"
@@ -41,7 +41,11 @@ def is_silent(audio: Optional[np.ndarray]) -> bool:
 
 
 class ShuperWhisperApp:
-    """Wires together audio, transcription, the hotkey, the overlay and typing."""
+    """Wires together audio, transcription, the hotkey, the indicator and typing.
+
+    With live typing (the default on a GPU) a StreamingSession feeds words to
+    the LiveWriter as you speak; otherwise one accurate pass runs when you stop.
+    """
 
     def __init__(self, config: AppConfig):
         self.config = config
@@ -50,14 +54,16 @@ class ShuperWhisperApp:
         self._running = False
         self._session_lock = threading.Lock()
         self._level_timer: Optional[threading.Timer] = None
+        self._session: Optional[StreamingSession] = None
+        self._session_error: Optional[str] = None
 
         self.recorder = AudioRecorder(device_ref=config.input_device)
         self.transcriber = Transcriber(model_size=config.model_size, language=config.language,
-                                       compute=config.compute)
-        self.injector = TextInjector()
+                                       compute=config.compute, live_typing=config.live_typing)
         self.hotkey_manager = self._make_hotkeys(config.hotkey)
         self.dictionary = WordDictionary()
-        self.overlay = RecordingOverlay(position=config.overlay_position)
+        self.writer = LiveWriter(replacements=lambda: self.dictionary.get_replacements())
+        self.overlay = CaretIndicator()
 
     # -- state ---------------------------------------------------------------
 
@@ -79,11 +85,18 @@ class ShuperWhisperApp:
     def _run_async(self, fn, *args) -> None:
         threading.Thread(target=fn, args=args, daemon=True).start()
 
+    def _hotkey_vks(self) -> list[int]:
+        modifiers, trigger = parse_hotkey(self.config.hotkey)
+        vks = [get_vk(trigger)]
+        for mod in modifiers:
+            vks.extend(MODIFIER_VK_MAP.get(mod, []))
+        return vks
+
     # -- dictation session -----------------------------------------------------
 
     def _on_record_start(self) -> None:
         if not self._session_lock.acquire(blocking=False):
-            self.hotkey_manager.reset()  # previous dictation is still being typed
+            self.hotkey_manager.reset()  # previous dictation is still finishing
             return
         try:
             self.recorder.start_recording()
@@ -91,47 +104,94 @@ class ShuperWhisperApp:
             self._session_lock.release()
             self.hotkey_manager.reset()
             self._fail(f"Microphone: {e}")
+            self.overlay.show_error(self.error)
             return
+        self._session_error = None
+        self.writer.begin(ignore_vks=self._hotkey_vks())
         self._set_state(STATE_RECORDING)
         self.overlay.show()
         self._start_level_monitoring()
+        if not self.transcriber.live:
+            return  # type-on-stop: _on_record_stop runs one accurate pass
+        self._session = StreamingSession(
+            transcriber=self.transcriber,
+            read_audio=self.recorder.read_new,
+            on_hypothesis=self._on_hypothesis,
+            on_finished=self._on_session_finished,
+            on_auto_stop=self._auto_stop,
+            prompt=self.dictionary.get_initial_prompt,
+            hotwords=self.dictionary.get_hotwords() or None,
+            interval=0.4 if self.transcriber.device == "cuda" else 1.0,
+        )
+        self._session.start()
+
+    def _on_hypothesis(self, hypothesis: Hypothesis) -> None:
+        if self._session_error:
+            return
+        try:
+            self.writer.update(hypothesis.stable_delta, hypothesis.tentative,
+                               final=hypothesis.final)
+        except InjectionBlocked as e:
+            self._session_error = str(e)
+            if self._session:
+                self._session.stop()
+            return
+        self.overlay.reposition(use_uia=True)
 
     def _on_record_stop(self) -> None:
         self._stop_level_monitoring()
+        self._set_state(STATE_PROCESSING)
+        self.overlay.set_state("finishing")
+        if self._session:
+            self._session.stop()
+        else:
+            self._run_async(self._finish_batch)
+
+    def _auto_stop(self) -> None:
+        self.hotkey_manager.reset()
+        self._on_record_stop()
+
+    def _finish_batch(self) -> None:
+        """Type-on-stop: one beam-5 pass with VAD over the whole recording."""
+        error = None
         try:
             audio = self.recorder.stop_recording()
+            if not self.recorder.stream_error and not is_silent(audio):
+                text = self.transcriber.transcribe(
+                    audio,
+                    initial_prompt=self.dictionary.get_initial_prompt() or None,
+                    hotwords=self.dictionary.get_hotwords() or None,
+                )
+                if text:
+                    self._on_hypothesis(Hypothesis(text, "", True))
         except Exception as e:
-            audio = None
-            self.recorder.stream_error = str(e)
-        self._set_state(STATE_PROCESSING)
-        self.overlay.show_processing()
-        self._run_async(self._finish_session, audio)
+            error = str(e)
+        self._on_session_finished(error)
 
-    def _finish_session(self, audio: Optional[np.ndarray]) -> None:
+    def _on_session_finished(self, error: Optional[str]) -> None:
+        """End of a dictation, however it ended (streaming thread or batch thread)."""
+        self._stop_level_monitoring()
+        self.hotkey_manager.reset()
         try:
-            if self.recorder.stream_error:
-                raise RuntimeError(self.recorder.stream_error)
-            if is_silent(audio):
+            try:
+                self.recorder.stop_recording()
+            except Exception as e:
+                error = error or str(e)
+            self.writer.finish()
+            error = error or self._session_error or self.recorder.stream_error
+            if error:
+                self._fail(error)
+                self.overlay.show_error(error)
+            else:
                 self._set_state(STATE_IDLE)
-                return
-            text = self.transcriber.transcribe(
-                audio,
-                initial_prompt=self.dictionary.get_initial_prompt() or None,
-                hotwords=self.dictionary.get_hotwords() or None,
-            )
-            text = clean(text, self.dictionary.get_replacements())
-            if text:
-                self.injector.inject(text)
-            self._set_state(STATE_IDLE)
-        except InjectionBlocked as e:
-            self._fail(str(e))
-        except Exception as e:
-            self._fail(f"Dictation failed: {e}")
+                self.overlay.hide()
         finally:
-            self.overlay.hide()
+            self._session = None
             self._session_lock.release()
 
     def _start_level_monitoring(self) -> None:
+        ticks = {"n": 0}
+
         def _update():
             if self.recorder.check_alive():
                 # Device vanished mid-dictation: end the session now rather
@@ -142,6 +202,9 @@ class ShuperWhisperApp:
                 return
             if self.overlay.is_visible:
                 self.overlay.update_levels(self.recorder.get_levels(self.overlay.BAR_COUNT))
+                ticks["n"] += 1
+                if ticks["n"] % 5 == 0:
+                    self.overlay.reposition()
                 self._level_timer = threading.Timer(0.033, _update)
                 self._level_timer.daemon = True
                 self._level_timer.start()
@@ -211,18 +274,19 @@ class ShuperWhisperApp:
     def _apply_config(self, new_config: AppConfig) -> None:
         self.config = new_config
         self.dictionary.load()
-        self.overlay.set_position(new_config.overlay_position)
         try:
             # Compare with what's actually running, not the previous config:
             # an earlier failed reload may have left them different.
             if new_config.input_device != self.recorder.device_ref:
                 self.recorder = AudioRecorder(device_ref=new_config.input_device)
-            model_changed = (new_config.model_size, new_config.compute) != self.transcriber.requested
+            wanted = (new_config.model_size, new_config.compute, new_config.live_typing)
+            model_changed = wanted != self.transcriber.requested
             if model_changed or not self.transcriber.loaded:
                 self._set_state(STATE_LOADING)
                 self.transcriber = Transcriber(model_size=new_config.model_size,
                                                language=new_config.language,
-                                               compute=new_config.compute)
+                                               compute=new_config.compute,
+                                               live_typing=new_config.live_typing)
                 self.transcriber.load_model()
             self.transcriber.language = new_config.language
             if new_config.hotkey != self.hotkey_manager.hotkey or not self.hotkey_manager.registered:

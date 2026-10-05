@@ -131,5 +131,5 @@ def test_cuda_failure_during_transcribe_retries_on_cpu(monkeypatch):
 
 
 def test_requested_reports_configuration():
-    t = tr.Transcriber(model_size="auto", compute="cpu")
-    assert t.requested == ("auto", "cpu")
+    t = tr.Transcriber(model_size="auto", compute="cpu", live_typing="off")
+    assert t.requested == ("auto", "cpu", "off")

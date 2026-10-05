@@ -137,8 +137,8 @@ class WindowAPI:
                 model_size=data.get('model_size', 'auto'),
                 input_device=data.get('input_device'),
                 language=data.get('language', 'en'),
-                overlay_position=data.get('overlay_position', 'top_center'),
                 compute=data.get('compute', 'auto'),
+                live_typing=data.get('live_typing', 'auto'),
             )
             config.validate()
             if config.input_device != load_config().input_device:
@@ -159,11 +159,10 @@ class WindowAPI:
 
     def get_config_options(self):
         """Return available options for config dropdowns."""
-        from .config import AppConfig, SUPPORTED_LANGUAGES, VALID_OVERLAY_POSITIONS
+        from .config import AppConfig, SUPPORTED_LANGUAGES
         return {
             'models': list(AppConfig.VALID_MODELS),
             'languages': SUPPORTED_LANGUAGES,
-            'overlay_positions': list(VALID_OVERLAY_POSITIONS),
         }
 
     # ------------------------------------------------------------------

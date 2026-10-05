@@ -68,9 +68,10 @@ SUPPORTED_LANGUAGES = {
     "hu": "Hungarian",
 }
 
-VALID_OVERLAY_POSITIONS = ("top_center", "center", "bottom_center")
 # "auto" uses an NVIDIA GPU when its CUDA runtime loads; "cpu" never tries.
 VALID_COMPUTE = ("auto", "cpu")
+# "auto": type live as you speak on a GPU, all at once when you stop on CPU.
+VALID_LIVE_TYPING = ("auto", "on", "off")
 
 
 def _validate_device(value: object) -> object:
@@ -101,8 +102,8 @@ class AppConfig:
     # {"name": str, "hostapi": str | None}, a legacy int index, or None for default.
     input_device: object = None
     language: str = "en"
-    overlay_position: str = "top_center"
     compute: str = "auto"
+    live_typing: str = "auto"
 
     VALID_MODELS = ("auto", "tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
 
@@ -113,17 +114,17 @@ class AppConfig:
             self.hotkey = "ctrl+shift+space"
         if self.language not in SUPPORTED_LANGUAGES:
             self.language = "en"
-        if self.overlay_position not in VALID_OVERLAY_POSITIONS:
-            self.overlay_position = "top_center"
         if self.compute not in VALID_COMPUTE:
             self.compute = "auto"
+        if self.live_typing not in VALID_LIVE_TYPING:
+            self.live_typing = "auto"
         self.input_device = _validate_device(self.input_device)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-_CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "overlay_position", "compute"]
+_CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "compute", "live_typing"]
 
 
 def load_config(path: str | None = None) -> AppConfig:

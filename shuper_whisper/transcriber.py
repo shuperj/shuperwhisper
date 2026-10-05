@@ -202,9 +202,9 @@ class Transcriber:
         return self._live
 
     @property
-    def requested(self) -> tuple[str, str]:
-        """(model size, compute preference) as configured, before "auto" resolves."""
-        return self._requested_size, self._compute_pref
+    def requested(self) -> tuple[str, str, str]:
+        """(model size, compute, live typing) as configured, before "auto" resolves."""
+        return self._requested_size, self._compute_pref, self._live_pref
 
     @property
     def loaded(self) -> bool:
