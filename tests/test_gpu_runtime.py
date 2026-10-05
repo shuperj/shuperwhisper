@@ -34,13 +34,15 @@ def fake_pypi(monkeypatch):
 
 
 def test_installs_only_dlls_and_marks_complete(fake_pypi, tmp_path):
-    target = tmp_path / "cuda"
+    base = tmp_path / "cuda"
     progress = gr.Progress()
-    gr.install(progress, threading.Event(), opener=fake_pypi, target=str(target),
+    gr.install(progress, threading.Event(), opener=fake_pypi, target=str(base),
                check_driver=lambda: (566, 36))
-    assert sorted(p.name for p in target.iterdir()) == [
+    folder = base / gr.version_tag()
+    assert sorted(p.name for p in folder.iterdir()) == [
         "cublas64_12.dll", "cudnn64_9.dll", "cudnn_ops64_9.dll", "runtime.json"]
-    assert gr.installed(str(target))
+    assert sorted(p.name for p in base.iterdir()) == [gr.version_tag()]
+    assert gr.installed(str(base))
     assert progress.to_dict() == {"state": "done", "fraction": 1.0, "message": "GPU acceleration is ready"}
 
 
@@ -48,24 +50,35 @@ def test_corrupt_download_leaves_nothing(fake_pypi, tmp_path, monkeypatch):
     wheels = list(gr.WHEELS)
     wheels[1] = gr.Wheel(wheels[1].name, wheels[1].version, wheels[1].url, "0" * 64, wheels[1].size)
     monkeypatch.setattr(gr, "WHEELS", tuple(wheels))
-    target = tmp_path / "cuda"
+    base = tmp_path / "cuda"
     with pytest.raises(gr.SetupError, match="corrupted"):
-        gr.install(gr.Progress(), threading.Event(), opener=fake_pypi, target=str(target),
+        gr.install(gr.Progress(), threading.Event(), opener=fake_pypi, target=str(base),
                    check_driver=lambda: None)
-    assert not target.exists() and not (tmp_path / "cuda.partial").exists()
+    assert list(base.iterdir()) == []
 
 
-def test_existing_runtime_kept_when_reinstall_fails(fake_pypi, tmp_path, monkeypatch):
-    target = tmp_path / "cuda"
-    gr.install(gr.Progress(), threading.Event(), opener=fake_pypi, target=str(target),
+def test_new_version_installs_beside_a_loaded_old_one(fake_pypi, tmp_path, monkeypatch):
+    base = tmp_path / "cuda"
+    old = base / "cublas-0.9_cudnn-0.9"
+    old.mkdir(parents=True)
+    (old / "cudnn64_9.dll").write_bytes(b"in use")
+    (old / "runtime.json").write_text("{}")
+    gr.install(gr.Progress(), threading.Event(), opener=fake_pypi, target=str(base),
                check_driver=lambda: None)
-    wheels = list(gr.WHEELS)
-    wheels[0] = gr.Wheel(wheels[0].name, wheels[0].version, wheels[0].url, "0" * 64, wheels[0].size)
-    monkeypatch.setattr(gr, "WHEELS", tuple(wheels))
-    with pytest.raises(gr.SetupError):
-        gr.install(gr.Progress(), threading.Event(), opener=fake_pypi, target=str(target),
-                   check_driver=lambda: None)
-    assert (target / "cublas64_12.dll").exists()
+    assert (old / "cudnn64_9.dll").exists()              # never touched while it may be loaded
+    assert gr.installed(str(base))
+    gr.cleanup(str(base))                                  # next startup, before CUDA loads
+    assert sorted(p.name for p in base.iterdir()) == [gr.version_tag()]
+
+
+def test_already_installed_is_a_no_op(fake_pypi, tmp_path):
+    base = tmp_path / "cuda"
+    gr.install(gr.Progress(), threading.Event(), opener=fake_pypi, target=str(base),
+               check_driver=lambda: None)
+    opened = []
+    p = gr.Progress()
+    gr.install(p, threading.Event(), opener=lambda *a, **k: opened.append(a), target=str(base))
+    assert opened == [] and p.state == "done"
 
 
 def test_cancel(fake_pypi, tmp_path):
@@ -74,7 +87,7 @@ def test_cancel(fake_pypi, tmp_path):
     with pytest.raises(gr.SetupCancelled):
         gr.install(gr.Progress(), cancel, opener=fake_pypi, target=str(tmp_path / "cuda"),
                    check_driver=lambda: None)
-    assert not (tmp_path / "cuda").exists()
+    assert list((tmp_path / "cuda").iterdir()) == []
 
 
 def test_old_driver_refused_before_downloading(fake_pypi, tmp_path):
@@ -87,10 +100,10 @@ def test_old_driver_refused_before_downloading(fake_pypi, tmp_path):
 
 
 def test_installed_requires_matching_versions(fake_pypi, tmp_path):
-    target = tmp_path / "cuda"
-    target.mkdir()
-    (target / "runtime.json").write_text('{"wheels": {"nvidia-cublas-cu12": "0.9"}}')
-    assert not gr.installed(str(target))
+    folder = tmp_path / "cuda" / gr.version_tag()
+    folder.mkdir(parents=True)
+    (folder / "runtime.json").write_text('{"wheels": {"nvidia-cublas-cu12": "0.9"}}')
+    assert not gr.installed(str(tmp_path / "cuda"))
 
 
 def test_gpu_setup_runs_in_background(fake_pypi, tmp_path, monkeypatch):
@@ -100,8 +113,10 @@ def test_gpu_setup_runs_in_background(fake_pypi, tmp_path, monkeypatch):
     finished = threading.Event()
     states = []
     setup = gr.GpuSetup()
-    setup.start(on_done=lambda state: (states.append(state), finished.set()))
+    activated = []
+    setup.start(on_installed=lambda: activated.append(setup.progress.state),
+                on_done=lambda state: (states.append(state), finished.set()))
     assert finished.wait(5)
-    assert states == ["done"]
+    assert states == ["done"] and activated == ["activating"]
     setup._thread.join(1)
     assert not setup.running

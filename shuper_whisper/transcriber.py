@@ -13,6 +13,8 @@ from faster_whisper import WhisperModel
 # ctranslate2 >= 4.5 is built against CUDA 12 + cuDNN 9.
 _CUDA_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
 _added_dll_dirs: set[str] = set()
+# Written last by gpu_runtime.install(): a runtime folder without it is incomplete.
+RUNTIME_MARKER = "runtime.json"
 
 
 def _bundled_model_path(model_size: str) -> str | None:
@@ -28,11 +30,26 @@ def _bundled_model_path(model_size: str) -> str | None:
 
 
 def runtime_dir() -> str:
-    """Where the GPU runtime downloader puts the CUDA DLLs."""
+    """Where the GPU runtime downloader keeps its versioned CUDA folders.
+
+    Next to the exe when installed; a separate folder when running from
+    source, so a dev checkout never shares (or loses) the installed copy's.
+    """
     if getattr(sys, "frozen", False):
         return os.path.join(os.path.dirname(sys.executable), "cuda")
     base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
-    return os.path.join(base, "ShuperWhisper", "cuda")
+    return os.path.join(base, "ShuperWhisperDev", "cuda")
+
+
+def _complete_runtime() -> Optional[str]:
+    """Newest fully installed runtime folder (one with the marker), if any."""
+    base = runtime_dir()
+    try:
+        folders = [os.path.join(base, n) for n in os.listdir(base)]
+    except OSError:
+        return None
+    complete = [f for f in folders if os.path.isfile(os.path.join(f, RUNTIME_MARKER))]
+    return max(complete, key=os.path.getmtime) if complete else None
 
 
 @functools.lru_cache(maxsize=1)
@@ -60,7 +77,8 @@ def _cuda_device_count() -> int:
 def _nvidia_dll_dirs() -> list[str]:
     """The downloaded GPU runtime, plus the bin/ folders of the pip
     nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels (dev installs)."""
-    dirs = [runtime_dir()] if os.path.isdir(runtime_dir()) else []
+    runtime = _complete_runtime()
+    dirs = [runtime] if runtime else []
     roots = []
     try:
         import nvidia  # namespace package installed by the wheels

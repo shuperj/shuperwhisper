@@ -33,9 +33,10 @@ dev = [
     "pyinstaller",
 ]
 gpu = [
-    # Same versions the in-app GPU setup downloads (gpu_runtime.WHEELS, stage 3).
+    # Same versions the in-app GPU setup downloads (gpu_runtime.WHEELS); cuDNN
+    # matches the cudnn64_9.dll that ctranslate2 4.8.2 bundles.
     "nvidia-cublas-cu12==12.9.2.10",
-    "nvidia-cudnn-cu12==9.27.0.42",
+    "nvidia-cudnn-cu12==9.10.2.21",
 ]
 
 [tool.pytest.ini_options]

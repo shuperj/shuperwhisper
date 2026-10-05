@@ -20,10 +20,22 @@ const MODEL_LABELS: Record<string, string> = {
 };
 
 export default function App() {
-  const { config, options, devices, system, status, loading, loadError, errors, apply, refreshSystem } =
-    useSettings();
+  const {
+    config,
+    options,
+    devices,
+    system,
+    status,
+    loading,
+    loadError,
+    errors,
+    apply,
+    refreshSystem,
+    pollUntilSettled,
+  } = useSettings();
   const { trainingStatus, clearTraining } = useTraining();
   const [autostart, setAutostartState] = useState<boolean | null>(null);
+  const [autostartError, setAutostartError] = useState<string | null>(null);
 
   useEffect(() => {
     getAutostart().then(setAutostartState).catch(() => {});
@@ -34,7 +46,8 @@ export default function App() {
     return <div className="p-6 text-error text-[13px]">{loadError ?? "Couldn't load settings"}</div>;
   }
 
-  const modelDescription = status.state === "loading" ? "Loading the speech model…" : (system?.compute ?? "");
+  const busy = status.state === "loading";
+  const modelDescription = busy ? "Loading the speech model…" : (system?.compute ?? "");
 
   return (
     <div className="h-full overflow-y-auto">
@@ -45,11 +58,17 @@ export default function App() {
         )}
 
         <Section title="Dictation">
-          <ShortcutCard hotkey={config.hotkey} error={errors.hotkey} onChange={(h) => apply({ hotkey: h })} />
+          <ShortcutCard
+            hotkey={config.hotkey}
+            error={errors.hotkey}
+            disabled={busy}
+            onChange={(h) => apply({ hotkey: h })}
+          />
           <MicrophoneCard
             device={config.input_device}
             devices={devices}
             error={errors.input_device}
+            disabled={busy}
             onChange={(d) => apply({ input_device: d })}
           />
         </Section>
@@ -58,7 +77,7 @@ export default function App() {
           <Card icon={Cpu} title="Speech model" description={modelDescription} error={errors.model_size}>
             <Select
               value={config.model_size}
-              disabled={status.state === "loading"}
+              disabled={busy}
               onChange={(v) => apply({ model_size: v })}
               options={options.models.map((m) => ({ value: m, label: MODEL_LABELS[m] ?? m }))}
             />
@@ -66,6 +85,7 @@ export default function App() {
           <Card icon={Globe} title="Language" error={errors.language}>
             <Select
               value={config.language}
+              disabled={busy}
               onChange={(v) => apply({ language: v })}
               options={Object.entries(options.languages).map(([value, label]) => ({ value, label }))}
             />
@@ -78,7 +98,10 @@ export default function App() {
             errors={errors}
             apply={apply}
             modelState={status.state}
-            onGpuReady={refreshSystem}
+            onGpuReady={() => {
+              refreshSystem();
+              pollUntilSettled();
+            }}
           />
         </Section>
 
@@ -91,12 +114,19 @@ export default function App() {
         </Section>
 
         <Section title="General">
-          <Card icon={Power} title="Start with Windows">
+          <Card icon={Power} title="Start with Windows" error={autostartError}>
             {autostart !== null && (
               <Toggle
                 label="Start with Windows"
                 checked={autostart}
-                onChange={async (on) => setAutostartState(await setAutostart(on))}
+                onChange={async (on) => {
+                  setAutostartError(null);
+                  try {
+                    setAutostartState(await setAutostart(on));
+                  } catch (e) {
+                    setAutostartError(e instanceof Error ? e.message : "Couldn't change that");
+                  }
+                }}
               />
             )}
           </Card>

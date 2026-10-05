@@ -63,7 +63,7 @@ Then compile `packaging/installer.iss` with [Inno Setup 6](https://jrsoftware.or
 The installer stays small: NVIDIA's CUDA libraries are not bundled. When the
 installer finds an NVIDIA graphics card it offers a ticked "Set up GPU
 acceleration" option, which runs `ShuperWhisper.exe --setup-gpu` to download
-them (about 1.3 GB, pinned versions from PyPI with checksums). Settings ->
+them (about 1.2 GB, pinned versions from PyPI with checksums). Settings ->
 Processing has the same button for later.
 
 ## Support

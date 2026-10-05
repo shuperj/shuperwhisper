@@ -64,8 +64,12 @@ export function ProcessingSection({
 
   const start = async () => {
     setSetup({ state: "downloading", fraction: 0, message: "Starting…" });
-    await setupGpu();
-    watch();
+    try {
+      await setupGpu();
+      watch();
+    } catch (e) {
+      setSetup({ state: "error", fraction: 0, message: e instanceof Error ? e.message : "Couldn't start" });
+    }
   };
 
   const running = setup !== null && !FINISHED.includes(setup.state);
@@ -74,8 +78,10 @@ export function ProcessingSection({
   else if (!gpu.gpu) description = "No NVIDIA graphics card found. Dictation runs on the processor.";
   else if (gpu.active) description = `${gpu.gpu}: in use`;
   else if (gpu.installed && config.compute === "cpu") description = `${gpu.gpu}: set up, but turned off below`;
-  else if (gpu.installed) description = `${gpu.gpu}: set up, loading…`;
-  else description = `${gpu.gpu} found. Download NVIDIA's libraries (about 1.3 GB) to turn on live typing.`;
+  else if (gpu.installed && (modelState === "loading" || running)) description = `${gpu.gpu}: starting…`;
+  else if (gpu.installed)
+    description = `${gpu.gpu}: set up, but it couldn't start, so the processor is used. Updating the NVIDIA driver may help.`;
+  else description = `${gpu.gpu} found. Download NVIDIA's libraries (about 1.2 GB) to turn on live typing.`;
 
   return (
     <>
@@ -114,6 +120,7 @@ export function ProcessingSection({
         <Toggle
           label="Use GPU when available"
           checked={config.compute === "auto"}
+          disabled={modelState === "loading"}
           onChange={(on) => apply({ compute: on ? "auto" : "cpu" })}
         />
       </Card>
@@ -125,6 +132,7 @@ export function ProcessingSection({
       >
         <Select
           value={config.live_typing}
+          disabled={modelState === "loading"}
           onChange={(v) => apply({ live_typing: v as AppConfig["live_typing"] })}
           options={[
             { value: "auto", label: "Automatic" },

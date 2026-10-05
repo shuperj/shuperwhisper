@@ -21,14 +21,17 @@ export function MicrophoneCard({
   device,
   devices,
   error,
+  disabled,
   onChange,
 }: {
   device: DeviceRef | null;
   devices: Device[];
   error?: string;
+  disabled?: boolean;
   onChange: (d: DeviceRef | null) => void;
 }) {
   const [testing, setTesting] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [level, setLevel] = useState(0);
   const [testError, setTestError] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
@@ -49,6 +52,7 @@ export function MicrophoneCard({
 
   const start = async () => {
     setTestError(null);
+    setStarting(true);
     try {
       const result = await startMicTest(device);
       if (!result.success) {
@@ -58,6 +62,8 @@ export function MicrophoneCard({
     } catch (e) {
       setTestError(e instanceof Error ? e.message : "Couldn't open the microphone");
       return;
+    } finally {
+      setStarting(false);
     }
     setTesting(true);
     timer.current = window.setInterval(async () => {
@@ -80,12 +86,14 @@ export function MicrophoneCard({
   );
 
   const current = device ? findDevice(devices, device) : undefined;
+  // Name the driver type only when two entries would otherwise look the same.
+  const duplicate = (name: string) => devices.filter((d) => d.name === name).length > 1;
   const options = [
     { value: DEFAULT, label: "Windows default" },
-    ...devices.map((d) => ({
-      value: id(d.name, d.hostapi),
-      label: d.is_default ? `${d.name} (default)` : d.name,
-    })),
+    ...devices.map((d) => {
+      const name = duplicate(d.name) ? `${d.name} · ${d.hostapi_label}` : d.name;
+      return { value: id(d.name, d.hostapi), label: d.is_default ? `${name} (default)` : name };
+    }),
   ];
   // A saved device that isn't plugged in right now stays visible and selected.
   if (device && !current) options.push({ value: MISSING, label: `${device.name} (not connected)` });
@@ -99,7 +107,9 @@ export function MicrophoneCard({
       error={error ?? testError}
       below={
         <div className="flex items-center gap-3">
-          <Button onClick={testing ? stop : start}>{testing ? "Stop test" : "Test"}</Button>
+          <Button onClick={testing ? stop : start} disabled={starting || (disabled && !testing)}>
+            {testing ? "Stop test" : starting ? "Opening…" : "Test"}
+          </Button>
           <div className="flex-1">
             <LevelMeter level={level} />
           </div>
@@ -109,6 +119,7 @@ export function MicrophoneCard({
       <Select
         value={value}
         options={options}
+        disabled={disabled}
         onChange={(v) => {
           if (testing) stop();
           if (v === MISSING) return;

@@ -13,9 +13,11 @@ from shuper_whisper.config import AppConfig
 @pytest.fixture
 def api(tmp_path, monkeypatch):
     app = MagicMock()
-    app.state, app.error, app.busy = "idle", None, False
+    app.state, app.error, app.busy, app.reload_error = "idle", None, False, None
     app.transcriber.device = "cuda"
     app.transcriber.model_size = "large-v3-turbo"
+    app.transcriber.requested = ("auto", "auto", "auto")
+    app.transcriber.loaded = True
     app.config = AppConfig()
     app.reload_config.return_value = True
     a = WindowAPI()
@@ -27,7 +29,7 @@ def api(tmp_path, monkeypatch):
 
 def test_status(api):
     api._app.state, api._app.error = "error", "Mic gone"
-    assert api.get_status() == {"state": "error", "error": "Mic gone"}
+    assert api.get_status() == {"state": "error", "error": "Mic gone", "reload_error": None}
 
 
 def test_system_info(api, monkeypatch):
@@ -47,34 +49,37 @@ def test_cpu_compute_label(api, monkeypatch):
     assert api.get_system_info()["compute"] == "Base on CPU"
 
 
-def test_model_change_reloads_in_background_then_saves(api, tmp_path):
-    started = threading.Event()
-
-    def reload(config):
-        started.set()
-        return True
-    api._app.reload_config.side_effect = reload
+def test_model_change_reloads_in_background_then_saves_what_runs(api, tmp_path):
+    def background(config, on_done=None):
+        api._app.config = config
+        on_done(True)
+    api._app.reload_in_background.side_effect = background
     result = api.save_config({"model_size": "small"})
     assert result["success"] and result["loading"]
-    assert started.wait(2)
-    for _ in range(50):
-        if (tmp_path / "config.json").exists():
-            break
-        threading.Event().wait(0.02)
     assert '"small"' in (tmp_path / "config.json").read_text()
+    api._app.reload_config.assert_not_called()
+
+
+def test_changes_refused_while_loading(api):
+    api._app.state = "loading"
+    assert "Still loading" in api.save_config({"hotkey": "f9"})["error"]
+
+
+def test_partial_failure_returns_running_config(api, tmp_path):
+    def apply(config):
+        api._app.reload_error = "Couldn't register 'f9'"
+        return True
+    api._app.reload_config.side_effect = apply
+    result = api.save_config({"hotkey": "f9"})
+    assert result["success"] is False and "f9" in result["error"]
+    assert result["config"]["hotkey"] == "ctrl+shift+space"
+    assert '"ctrl+shift+space"' in (tmp_path / "config.json").read_text()
 
 
 def test_hotkey_change_applies_synchronously(api):
     result = api.save_config({"hotkey": "f9"})
     assert result["success"] and not result.get("loading")
     api._app.reload_config.assert_called_once()
-
-
-def test_failed_apply_is_not_saved(api, tmp_path):
-    api._app.error = "Couldn't register 'f9'"
-    result = api.save_config({"hotkey": "f9"})
-    assert result == {"success": False, "error": "Couldn't register 'f9'"}
-    assert not (tmp_path / "config.json").exists()
 
 
 def test_busy_refuses(api):
@@ -92,11 +97,11 @@ def test_gpu_setup_success_reloads_model(api, monkeypatch):
     class FakeSetup:
         progress = bridge_mod.gpu_runtime.Progress(state="done", message="ok")
 
-        def start(self, on_done=None):
-            on_done("done")
+        def start(self, on_installed=None, on_done=None):
+            on_installed()
     monkeypatch.setattr(bridge_mod, "_gpu_setup", FakeSetup())
     assert api.setup_gpu() == {"success": True}
-    api._app.reload_config.assert_called_once_with(api._app.config, force_model=True)
+    api._app.reload_config.assert_called_once_with(api._app.config, force_model=True, wait=120.0)
     assert api.get_gpu_setup_progress()["state"] == "done"
 
 
@@ -130,3 +135,20 @@ def test_mic_test_error(api, monkeypatch):
     result = api.start_mic_test({"name": "Broken", "hostapi": None})
     assert result == {"success": False, "error": "Invalid sample rate"}
     assert api.get_mic_level() == 0.0
+
+
+def test_concurrent_mic_tests_leave_one_stream(api, monkeypatch):
+    import threading
+    opened = []
+
+    class Slow(FakeRecorder):
+        def start_recording(self):
+            opened.append(self)
+            threading.Event().wait(0.05)
+    monkeypatch.setattr(bridge_mod, "AudioRecorder", Slow)
+    threads = [threading.Thread(target=api.start_mic_test, args=(None,)) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(opened) == 2 and sum(not r.stopped for r in opened) == 1

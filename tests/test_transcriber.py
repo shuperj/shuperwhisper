@@ -93,10 +93,15 @@ def test_cuda_load_failure_falls_back_to_cpu(monkeypatch):
     assert t.device == "cpu" and t.model_size == "small"
 
 
-def test_runtime_dir_is_searched(monkeypatch, tmp_path):
-    (tmp_path / "cuda").mkdir()
+def test_only_complete_runtime_folders_are_searched(monkeypatch, tmp_path):
+    complete = tmp_path / "cuda" / "cublas-1_cudnn-1"
+    complete.mkdir(parents=True)
+    (complete / tr.RUNTIME_MARKER).write_text("{}")
+    (tmp_path / "cuda" / "cublas-2_cudnn-2.partial").mkdir()
     monkeypatch.setattr(tr, "runtime_dir", lambda: str(tmp_path / "cuda"))
-    assert str(tmp_path / "cuda") in tr._nvidia_dll_dirs()
+    dirs = tr._nvidia_dll_dirs()
+    assert str(complete) in dirs
+    assert not any(d.endswith(".partial") for d in dirs)
 
 
 def test_select_compute_env_override(monkeypatch):

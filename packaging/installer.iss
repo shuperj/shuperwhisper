@@ -37,7 +37,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 Name: "autostart"; Description: "Start ShuperWhisper with Windows"; GroupDescription: "Other options:"
-Name: "gpu"; Description: "Set up GPU acceleration for live typing (downloads about 1.3 GB from NVIDIA)"; GroupDescription: "NVIDIA graphics card found:"; Check: HasNvidiaGpu
+Name: "gpu"; Description: "Set up GPU acceleration for live typing (downloads about 1.2 GB from NVIDIA)"; GroupDescription: "NVIDIA graphics card found:"; Check: HasNvidiaGpu
 
 [Files]
 Source: "..\dist\ShuperWhisper\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -53,6 +53,10 @@ Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChang
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: autostart
+
+[InstallDelete]
+; A 1.x build's files must not linger next to the new ones.
+Type: filesandordirs; Name: "{app}\_internal"
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\cuda"

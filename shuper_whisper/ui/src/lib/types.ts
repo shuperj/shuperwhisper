@@ -42,6 +42,8 @@ export interface SystemInfo {
 export interface AppStatus {
   state: "idle" | "recording" | "processing" | "loading" | "error";
   error: string | null;
+  /** What the last settings change couldn't apply (it kept its old value). */
+  reload_error: string | null;
 }
 
 export interface GpuStatus {
@@ -51,7 +53,7 @@ export interface GpuStatus {
 }
 
 export interface GpuSetupProgress {
-  state: "idle" | "downloading" | "extracting" | "done" | "error" | "cancelled";
+  state: "idle" | "downloading" | "extracting" | "activating" | "done" | "error" | "cancelled";
   fraction: number;
   message: string;
 }

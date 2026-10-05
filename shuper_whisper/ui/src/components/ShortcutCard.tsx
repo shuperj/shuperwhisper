@@ -12,10 +12,12 @@ const pretty = (hotkey: string) =>
 export function ShortcutCard({
   hotkey,
   error,
+  disabled,
   onChange,
 }: {
   hotkey: string;
   error?: string;
+  disabled?: boolean;
   onChange: (h: string) => void;
 }) {
   const [capturing, setCapturing] = useState(false);
@@ -37,7 +39,7 @@ export function ShortcutCard({
       description="Press once to start dictating, press again to stop."
       error={error}
     >
-      <Button onClick={capture} disabled={capturing}>
+      <Button onClick={capture} disabled={capturing || disabled}>
         {capturing ? "Press a shortcut… (Esc cancels)" : <kbd className="font-[inherit]">{pretty(hotkey)}</kbd>}
       </Button>
     </Card>

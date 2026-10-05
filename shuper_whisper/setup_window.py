@@ -20,7 +20,7 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
            background:transparent; color:var(--fg); flex:none; }
 </style></head><body>
   <h1>Setting up GPU acceleration</h1>
-  <p>Downloading NVIDIA's libraries (about 1.3 GB) so ShuperWhisper can type live as you speak.</p>
+  <p>Downloading NVIDIA's libraries (about 1.2 GB) so ShuperWhisper can type live as you speak.</p>
   <div class="track"><div class="bar" id="bar"></div></div>
   <div class="row"><span id="msg">Starting…</span><button id="btn" onclick="act()">Cancel</button></div>
 <script>
@@ -46,7 +46,8 @@ _HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><style>
 class _Api:
     def __init__(self, setup: gpu_runtime.GpuSetup):
         self._setup = setup
-        self.window = None
+        # Private: pywebview exposes public attributes of js_api to the page.
+        self._window = None
 
     def start(self):
         if gpu_runtime.installed():
@@ -61,15 +62,15 @@ class _Api:
         self._setup.cancel()
 
     def close(self):
-        if self.window:
-            self.window.destroy()
+        if self._window:
+            self._window.destroy()
 
 
 def run_setup_window() -> int:
     setup = gpu_runtime.GpuSetup()
     api = _Api(setup)
-    api.window = webview.create_window("Set up GPU acceleration", html=_HTML, js_api=api,
+    api._window = webview.create_window("Set up GPU acceleration", html=_HTML, js_api=api,
                                        width=480, height=230, resizable=False)
     webview.start()
-    setup.cancel()  # window closed mid-download
+    setup.cancel(wait=10.0)  # window closed mid-download: let it clean up
     return 0 if gpu_runtime.installed() else 1

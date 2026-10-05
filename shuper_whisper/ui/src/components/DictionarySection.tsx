@@ -97,7 +97,8 @@ export function DictionarySection({
     const w = word.trim();
     if (!w) return;
     run(async () => {
-      await addWord(w, phonetic.trim());
+      const result = await addWord(w, phonetic.trim());
+      if (result.success === false) throw new Error(result.error ?? "Couldn't add that word");
       setWord("");
       setPhonetic("");
     });
