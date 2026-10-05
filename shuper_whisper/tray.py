@@ -1,5 +1,6 @@
 """System tray controller using pystray."""
 
+import ctypes
 import os
 import sys
 import threading
@@ -18,7 +19,7 @@ from .app import (
     STATE_RECORDING,
     ShuperWhisperApp,
 )
-from . import autostart
+from . import autostart, system_theme
 from .bridge import WindowAPI
 from .config import AppConfig, load_config
 from .overlay import INDICATOR_HTML, CaretIndicator
@@ -129,29 +130,39 @@ class TrayController:
             self._icon.title = f"ShuperWhisper - {detail}"[:127]
 
     def _open_settings(self, icon, item) -> None:
-        """Create a settings webview window from the tray thread."""
+        """Open (or focus) the settings window."""
         dist_index = os.path.join(_DIST_DIR, 'index.html')
-
         if not os.path.exists(dist_index):
             print(f"WARNING: React build not found at {dist_index}")
             return
+        existing = [w for w in webview.windows if w.title == 'ShuperWhisper Settings']
+        if existing:
+            existing[0].restore()
+            existing[0].show()
+            return
 
         port = _ensure_static_server()
-
         api = WindowAPI()
         api.set_app_instance(self.app)
-
+        dark = system_theme.apps_use_dark()
         window = webview.create_window(
             'ShuperWhisper Settings',
             url=f'http://127.0.0.1:{port}/',
-            width=500,
-            height=640,
-            resizable=False,
-            frameless=False,
+            width=560,
+            height=700,
+            min_size=(460, 520),
+            resizable=True,
+            background_color='#202020' if dark else '#f3f3f3',
             js_api=api,
         )
-
         api._window = window
+
+        def _style():
+            hwnd = ctypes.windll.user32.FindWindowW(None, 'ShuperWhisper Settings')
+            if hwnd:
+                system_theme.apply_window_theme(hwnd, dark)
+        window.events.shown += _style
+        window.events.closed += api.stop_mic_test
 
     def _toggle_autostart(self, icon, item) -> None:
         new_state = autostart.toggle()
