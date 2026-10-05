@@ -5,7 +5,6 @@ import ctypes.wintypes
 import threading
 from typing import Callable, Optional
 
-from .config import FORMAT_MODE_LABELS, FORMAT_MODE_ORDER
 
 
 # Win32 structures for multi-monitor detection
@@ -156,32 +155,6 @@ OVERLAY_HTML = """\
     50% { opacity: 1; }
   }
 
-  /* Format mode display */
-  .format-row {
-    display: none;
-    justify-content: center;
-    align-items: center;
-    gap: 10px;
-    margin-top: 12px;
-    height: 20px;
-  }
-
-  .format-row.visible { display: flex; }
-
-  .format-arrow {
-    color: #888888;
-    font-size: 10px;
-    opacity: 0.6;
-  }
-
-  .format-label {
-    color: #cccccc;
-    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
-    font-size: 12px;
-    font-weight: 600;
-    min-width: 120px;
-    text-align: center;
-  }
 </style>
 </head>
 <body>
@@ -194,11 +167,6 @@ OVERLAY_HTML = """\
           <div class="waveform" id="waveform"></div>
           <div class="processing-text" id="proc-text">Processing...</div>
         </div>
-      </div>
-      <div class="format-row" id="format-row">
-        <span class="format-arrow">&#9650;</span>
-        <span class="format-label" id="format-label">Normal</span>
-        <span class="format-arrow">&#9660;</span>
       </div>
     </div>
   </div>
@@ -218,8 +186,6 @@ OVERLAY_HTML = """\
     var pillWrapper = document.getElementById('pill-wrapper');
     var borderStatic = document.getElementById('border-static');
     var procText = document.getElementById('proc-text');
-    var formatRow = document.getElementById('format-row');
-    var formatLabel = document.getElementById('format-label');
     var bars = waveform.children;
 
     function showOverlay(mode, fmtLabel) {
@@ -229,12 +195,6 @@ OVERLAY_HTML = """\
       glow.classList.remove('active');
       pillWrapper.classList.remove('processing');
       borderStatic.style.opacity = '1';
-      if (mode === 'toggle') {
-        formatRow.classList.add('visible');
-      } else {
-        formatRow.classList.remove('visible');
-      }
-      formatLabel.textContent = fmtLabel || 'Normal';
       for (var i = 0; i < bars.length; i++) {
         bars[i].style.height = '4px';
         bars[i].classList.remove('active');
@@ -247,7 +207,6 @@ OVERLAY_HTML = """\
       glow.classList.add('active');
       pillWrapper.classList.add('processing');
       borderStatic.style.opacity = '0';
-      formatRow.classList.remove('visible');
     }
 
     function hideOverlay() {
@@ -267,10 +226,6 @@ OVERLAY_HTML = """\
           bars[i].classList.remove('active');
         }
       }
-    }
-
-    function setFormatMode(label) {
-      formatLabel.textContent = label;
     }
 
     function setColors(accent, bg) {
@@ -301,19 +256,15 @@ class RecordingOverlay:
     WINDOW_H_TOGGLE = 92
     BAR_COUNT = 14
 
-    def __init__(self, position: str = "top_center",
-                 accent_color: str = "#ff4466",
-                 bg_color: str = "#1a1a2e"):
+    def __init__(self, position: str = "top_center"):
         self._position = position
-        self._accent_color = accent_color
-        self._bg_color = bg_color
+        self._accent_color = "#ff4466"
+        self._bg_color = "#1a1a2e"
         self._visible = False
         self._mode = "hold"
-        self._format_mode = "normal"
         self._state = "recording"
         self._window = None  # pywebview window, set by tray.py via set_window()
         self._hwnd = None
-        self._on_format_change: Optional[Callable[[str], None]] = None
         self._ready = threading.Event()
 
     @staticmethod
@@ -479,17 +430,12 @@ class RecordingOverlay:
         """No-op for API compatibility. Window is created by tray.py."""
         pass
 
-    def show(self, mode: str = "hold", format_mode: str = "normal") -> None:
-        """Show the overlay. Thread-safe."""
-        self._mode = mode
-        self._format_mode = format_mode
+    def show(self) -> None:
+        """Show the overlay without stealing focus. Thread-safe."""
+        self._mode = "hold"
         self._state = "recording"
         self._visible = True
-
-        label = FORMAT_MODE_LABELS.get(format_mode, "Normal")
-        self._eval(f"showOverlay('{mode}', '{label}')")
-
-        # Show the pywebview window without stealing focus
+        self._eval("showOverlay('hold', '')")
         if self._hwnd:
             SW_SHOWNOACTIVATE = 8
             ctypes.windll.user32.ShowWindow(self._hwnd, SW_SHOWNOACTIVATE)
@@ -524,29 +470,6 @@ class RecordingOverlay:
         js_arr = "[" + ",".join(f"{l:.4f}" for l in levels[:self.BAR_COUNT]) + "]"
         self._eval(f"updateLevels({js_arr})")
 
-    def cycle_format_mode(self, direction: int) -> str:
-        """Cycle format mode by direction (-1=up, +1=down). Returns new mode."""
-        try:
-            idx = FORMAT_MODE_ORDER.index(self._format_mode)
-        except ValueError:
-            idx = 0
-        idx = (idx + direction) % len(FORMAT_MODE_ORDER)
-        self._format_mode = FORMAT_MODE_ORDER[idx]
-
-        label = FORMAT_MODE_LABELS.get(self._format_mode, "Normal")
-        self._eval(f"setFormatMode('{label}')")
-
-        if self._on_format_change:
-            self._on_format_change(self._format_mode)
-        return self._format_mode
-
-    def set_on_format_change(self, callback: Callable[[str], None]) -> None:
-        self._on_format_change = callback
-
-    @property
-    def format_mode(self) -> str:
-        return self._format_mode
-
     @property
     def is_visible(self) -> bool:
         return self._visible
@@ -554,11 +477,8 @@ class RecordingOverlay:
     def set_position(self, position: str) -> None:
         self._position = position
 
-    def set_colors(self, accent_color: str, bg_color: str) -> None:
-        """Update overlay colors. Applied immediately if window is ready."""
-        self._accent_color = accent_color
-        self._bg_color = bg_color
-        self._eval(f"setColors('{accent_color}', '{bg_color}')")
+    def apply_colors(self) -> None:
+        self._eval(f"setColors('{self._accent_color}', '{self._bg_color}')")
 
     def destroy(self) -> None:
         """Clean up the overlay."""

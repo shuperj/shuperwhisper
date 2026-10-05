@@ -11,6 +11,7 @@ import webview
 from PIL import Image, ImageDraw
 
 from .app import (
+    STATE_ERROR,
     STATE_IDLE,
     STATE_LOADING,
     STATE_PROCESSING,
@@ -28,6 +29,7 @@ _COLORS = {
     STATE_RECORDING: "#FF3333",
     STATE_PROCESSING: "#FFAA00",
     STATE_LOADING: "#6699FF",
+    STATE_ERROR: "#E81123",
 }
 
 # Resolve the path to the React build (handles both dev and PyInstaller)
@@ -122,7 +124,9 @@ class TrayController:
         self._current_state = state
         if self._icon is not None:
             self._icon.icon = _make_icon(_COLORS.get(state, _COLORS[STATE_IDLE]))
-            self._icon.title = f"ShuperWhisper - {state.capitalize()}"
+            detail = self.app.error if state == STATE_ERROR and self.app.error else state.capitalize()
+            # Windows caps tray tooltips at 127 characters.
+            self._icon.title = f"ShuperWhisper - {detail}"[:127]
 
     def _open_settings(self, icon, item) -> None:
         """Create a settings webview window from the tray thread."""
@@ -180,28 +184,15 @@ class TrayController:
         print("[tray] _setup called, icon ready", flush=True)
         icon.visible = True
 
-        def _start_app():
-            try:
-                print("[tray] _start_app thread running", flush=True)
-                self.app.start()
-                print("[tray] app.start() completed", flush=True)
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                print(f"[tray] ERROR: {e}", flush=True)
-                icon.title = f"ShuperWhisper - ERROR: {e}"
-
-        threading.Thread(target=_start_app, daemon=True).start()
+        # start() never raises; failures show as the error state.
+        threading.Thread(target=self.app.start, daemon=True).start()
 
     def _on_overlay_loaded(self) -> None:
         """Called when the overlay webview DOM is fully loaded."""
         # Apply Win32 styles for transparency and non-focusable behavior
         self.app.overlay.apply_win32_styles()
 
-        # Send initial colors
-        self.app.overlay.set_colors(
-            self.config.accent_color, self.config.bg_color,
-        )
+        self.app.overlay.apply_colors()
 
     def run(self) -> None:
         """Create the tray icon and run the event loop.

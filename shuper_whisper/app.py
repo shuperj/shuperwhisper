@@ -2,173 +2,146 @@
 
 import ctypes
 import multiprocessing
-import os
 import sys
 import threading
 from typing import Callable, Optional
 
 import numpy as np
 
+from . import audio_devices, uia
+from ._win32_keys import InjectionBlocked
 from .audio import AudioRecorder
-from .config import AppConfig, config_dir, load_config
+from .config import AppConfig, load_config, save_config
 from .dictionary import WordDictionary
-from .formatter import TextFormatter
 from .hotkey import HotkeyManager
 from .injector import TextInjector
 from .overlay import RecordingOverlay
+from .text_rules import clean
 from .transcriber import Transcriber
 
-# Application states
 STATE_IDLE = "idle"
 STATE_RECORDING = "recording"
 STATE_PROCESSING = "processing"
 STATE_LOADING = "loading"
+STATE_ERROR = "error"
+
+# If even the loudest 100 ms of a recording is below this RMS, it's silence
+# (Whisper hallucinates on silence).
+SILENCE_RMS_THRESHOLD = 0.005
+
+
+def is_silent(audio: Optional[np.ndarray]) -> bool:
+    if audio is None or len(audio) == 0:
+        return True
+    window = 1600  # 100 ms at 16 kHz
+    usable = len(audio) // window * window or len(audio)
+    frames = audio[:usable].reshape(-1, min(window, usable))
+    loudest = float(np.sqrt(np.mean(frames ** 2, axis=1)).max())
+    return loudest < SILENCE_RMS_THRESHOLD
 
 
 class ShuperWhisperApp:
-    """Wires together audio, transcription, hotkey, overlay, formatting, and text injection."""
+    """Wires together audio, transcription, the hotkey, the overlay and typing."""
 
     def __init__(self, config: AppConfig):
         self.config = config
+        self.error: Optional[str] = None
         self._state_callback: Optional[Callable[[str], None]] = None
         self._running = False
-
-        self.recorder = AudioRecorder(device=config.input_device)
-        self.transcriber = Transcriber(
-            model_size=config.model_size,
-            language=config.language,
-        )
-        self.injector = TextInjector(
-            smart_spacing=config.smart_spacing,
-            bullet_mode=config.bullet_mode,
-            email_mode=config.email_mode,
-        )
-        self.hotkey_manager = HotkeyManager(
-            hotkey_str=config.hotkey,
-            on_start=self._on_record_start,
-            on_stop=self._on_record_stop,
-            mode=config.hotkey_mode,
-        )
-        self.formatter = TextFormatter()
-        self.dictionary = WordDictionary()
-        self.overlay = RecordingOverlay(
-            position=config.overlay_position,
-            accent_color=config.accent_color,
-            bg_color=config.bg_color,
-        )
-        self._current_format_mode = config.format_mode
+        self._session_lock = threading.Lock()
         self._level_timer: Optional[threading.Timer] = None
 
+        self.recorder = AudioRecorder(device_ref=config.input_device)
+        self.transcriber = Transcriber(model_size=config.model_size, language=config.language,
+                                       compute=config.compute)
+        self.injector = TextInjector()
+        self.hotkey_manager = self._make_hotkeys(config.hotkey)
+        self.dictionary = WordDictionary()
+        self.overlay = RecordingOverlay(position=config.overlay_position)
+
+    # -- state ---------------------------------------------------------------
+
     def set_state_callback(self, callback: Callable[[str], None]) -> None:
-        """Set a callback for state changes (idle, recording, processing, loading)."""
         self._state_callback = callback
 
-    def _set_state(self, state: str) -> None:
+    def _set_state(self, state: str, error: Optional[str] = None) -> None:
+        self.error = error
         if self._state_callback:
             self._state_callback(state)
 
+    def _fail(self, message: str) -> None:
+        print(f"[app] ERROR: {message}", flush=True)
+        self._set_state(STATE_ERROR, message)
+
+    def _make_hotkeys(self, hotkey: str) -> HotkeyManager:
+        return HotkeyManager(hotkey, on_start=self._on_record_start, on_stop=self._on_record_stop)
+
+    def _run_async(self, fn, *args) -> None:
+        threading.Thread(target=fn, args=args, daemon=True).start()
+
+    # -- dictation session -----------------------------------------------------
+
     def _on_record_start(self) -> None:
-        self.recorder.start_recording()
+        if not self._session_lock.acquire(blocking=False):
+            self.hotkey_manager.reset()  # previous dictation is still being typed
+            return
+        try:
+            self.recorder.start_recording()
+        except Exception as e:
+            self._session_lock.release()
+            self.hotkey_manager.reset()
+            self._fail(f"Microphone: {e}")
+            return
         self._set_state(STATE_RECORDING)
-        self._current_format_mode = self.config.format_mode
-
-        # Show overlay (always in "toggle" mode for format controls)
-        self.overlay.show(
-            mode="toggle",
-            format_mode=self._current_format_mode,
-        )
-
-        # Start feeding audio levels to overlay
+        self.overlay.show()
         self._start_level_monitoring()
 
-        # Register arrow keys for format cycling
-        self.hotkey_manager.register_arrow_keys(
-            on_up=lambda: self.overlay.cycle_format_mode(-1),
-            on_down=lambda: self.overlay.cycle_format_mode(1),
-        )
-
-        print("Recording... (release quick = hold mode, release slow = toggle mode)")
-
     def _on_record_stop(self) -> None:
-        # Clean up arrow keys
-        self.hotkey_manager.unregister_arrow_keys()
-
-        # Stop level monitoring
         self._stop_level_monitoring()
-
-        audio = self.recorder.stop_recording()
+        try:
+            audio = self.recorder.stop_recording()
+        except Exception as e:
+            audio = None
+            self.recorder.stream_error = str(e)
         self._set_state(STATE_PROCESSING)
         self.overlay.show_processing()
+        self._run_async(self._finish_session, audio)
 
-        # Capture format mode from overlay (user may have cycled it)
-        format_mode = self.overlay.format_mode
-
-        print("Processing...")
-        if audio is not None:
-            threading.Thread(
-                target=self._transcribe_and_inject,
-                args=(audio, format_mode),
-                daemon=True,
-            ).start()
-        else:
-            print("No audio recorded.\n")
-            self.overlay.hide()
+    def _finish_session(self, audio: Optional[np.ndarray]) -> None:
+        try:
+            if self.recorder.stream_error:
+                raise RuntimeError(self.recorder.stream_error)
+            if is_silent(audio):
+                self._set_state(STATE_IDLE)
+                return
+            text = self.transcriber.transcribe(
+                audio,
+                initial_prompt=self.dictionary.get_initial_prompt() or None,
+                hotwords=self.dictionary.get_hotwords() or None,
+            )
+            text = clean(text, self.dictionary.get_replacements())
+            if text:
+                self.injector.inject(text)
             self._set_state(STATE_IDLE)
-
-    # Minimum RMS energy threshold — below this, audio is considered silence.
-    # Typical speech RMS is 0.01–0.1; ambient noise/silence is < 0.003.
-    SILENCE_RMS_THRESHOLD = 0.005
-
-    def _transcribe_and_inject(self, audio, format_mode: str) -> None:
-        # Check if the audio is essentially silence before transcribing.
-        # This prevents Whisper from hallucinating dictionary words on empty input.
-        rms = float(np.sqrt(np.mean(audio ** 2)))
-        if rms < self.SILENCE_RMS_THRESHOLD:
-            print(f"Audio too quiet (RMS={rms:.4f}), skipping transcription.\n")
+        except InjectionBlocked as e:
+            self._fail(str(e))
+        except Exception as e:
+            self._fail(f"Dictation failed: {e}")
+        finally:
             self.overlay.hide()
-            self._set_state(STATE_IDLE)
-            return
-
-        # Build initial prompt and hotwords from dictionary
-        initial_prompt = self.dictionary.get_initial_prompt() or None
-        hotwords = self.dictionary.get_hotwords() or None
-
-        print(f"Transcribing (RMS={rms:.4f})...")
-        text = self.transcriber.transcribe(
-            audio,
-            initial_prompt=initial_prompt,
-            hotwords=hotwords,
-        )
-
-        if text:
-            print(f"Transcribed: {text}")
-
-            # Apply format mode if not normal
-            if format_mode != "normal":
-                formatted = self.formatter.format_text(
-                    text,
-                    format_mode,
-                    email_tone=self.config.email_tone,
-                    prompt_detail=self.config.prompt_detail,
-                )
-                if formatted:
-                    print(f"Formatted ({format_mode}): {formatted}")
-                    text = formatted
-
-            self.injector.inject(text)
-            print("Pasted!\n")
-        else:
-            print("No speech detected.\n")
-
-        self.overlay.hide()
-        self._set_state(STATE_IDLE)
+            self._session_lock.release()
 
     def _start_level_monitoring(self) -> None:
-        """Feed audio levels to overlay at ~30fps."""
         def _update():
-            if self._running and self.overlay.is_visible:
-                levels = self.recorder.get_levels(self.overlay.BAR_COUNT)
-                self.overlay.update_levels(levels)
+            if self.recorder.check_alive():
+                # Device vanished mid-dictation: end the session now rather
+                # than waiting for the second hotkey press.
+                self._level_timer = None
+                self.hotkey_manager.reset()
+                self._run_async(self._on_record_stop)
+                return
+            if self.overlay.is_visible:
+                self.overlay.update_levels(self.recorder.get_levels(self.overlay.BAR_COUNT))
                 self._level_timer = threading.Timer(0.033, _update)
                 self._level_timer.daemon = True
                 self._level_timer.start()
@@ -179,126 +152,98 @@ class ShuperWhisperApp:
             self._level_timer.cancel()
             self._level_timer = None
 
-    def start(self) -> None:
-        """Start the application in non-blocking mode.
+    # -- lifecycle -------------------------------------------------------------
 
-        Loads the model, opens the audio stream, and registers hotkeys.
-        Does NOT block the calling thread.
-        """
+    def _migrate_device(self) -> None:
+        migrated = audio_devices.migrate(self.config.input_device)
+        if migrated != self.config.input_device:
+            self.config.input_device = migrated
+            self.recorder = AudioRecorder(device_ref=migrated)
+            save_config(self.config)
+
+    def start(self) -> None:
+        """Load the model and register the hotkey. Never raises; failures
+        leave the app in STATE_ERROR with ``self.error`` set."""
         if self._running:
             return
-
-        print("[app] start() called", flush=True)
         self._set_state(STATE_LOADING)
-
-        # Load the model
-        print("[app] Loading model...", flush=True)
-        self.transcriber.load_model()
-        print("[app] Model loaded", flush=True)
-
-        # Print device info
-        if self.config.input_device is not None:
-            print(f"[app] Input device: {self.config.input_device}", flush=True)
-        else:
-            print(f"[app] Input device: {AudioRecorder.get_default_device_name()} (default)", flush=True)
-
-        print(f"[app] Hotkey: [{self.config.hotkey}] | Mode: Smart", flush=True)
-
-        # Start audio stream
-        print("[app] Opening audio stream...", flush=True)
-        self.recorder.open_stream()
-        print("[app] Audio stream open", flush=True)
-
-        # Register hotkey handlers
-        print("[app] Registering hotkey...", flush=True)
-        self.hotkey_manager.register()
-        print("[app] Hotkey registered", flush=True)
-
-        # Start overlay thread
-        print("[app] Starting overlay...", flush=True)
-        self.overlay.start()
-        print("[app] Overlay started", flush=True)
-
+        uia.warm_up()
+        try:
+            self._migrate_device()
+            if not self.transcriber.loaded:
+                self.transcriber.load_model()
+            self.hotkey_manager.register()
+        except Exception as e:
+            self._fail(str(e))
+            return
         self._running = True
         self._set_state(STATE_IDLE)
-        print("[app] Ready! Listening for hotkey.", flush=True)
+        print(f"[app] Ready. Press {self.config.hotkey} to dictate.", flush=True)
 
     def shutdown(self, destroy_overlay: bool = True) -> None:
-        """Stop the application cleanly.
-
-        Args:
-            destroy_overlay: If False, keep the overlay window alive (used by
-                reload_config so the persistent pywebview window isn't destroyed).
-        """
-        if not self._running:
-            return
         self._stop_level_monitoring()
         self.hotkey_manager.unregister()
-        self.recorder.close_stream()
         if destroy_overlay:
             self.overlay.destroy()
         else:
             self.overlay.hide()
         self._running = False
-        print("ShuperWhisper stopped.", flush=True)
 
-    def reload_config(self, new_config: AppConfig) -> None:
-        """Apply a new configuration, restarting subsystems as needed."""
-        needs_restart = (
-            new_config.model_size != self.config.model_size
-            or new_config.hotkey != self.config.hotkey
-            or new_config.input_device != self.config.input_device
-            or new_config.language != self.config.language
-            or new_config.hotkey_mode != self.config.hotkey_mode
-        )
+    @property
+    def busy(self) -> bool:
+        """A dictation is being recorded or typed."""
+        return self._session_lock.locked()
+
+    def reload_config(self, new_config: AppConfig) -> bool:
+        """Apply settings, touching only what differs from what's running.
+
+        Never raises. Returns False without changing anything while a
+        dictation is in progress.
+        """
+        if not self._session_lock.acquire(blocking=False):
+            return False
+        try:
+            self._apply_config(new_config)
+        finally:
+            self._session_lock.release()
+        return True
+
+    def _apply_config(self, new_config: AppConfig) -> None:
         self.config = new_config
-
-        # Always update injector settings (no restart needed)
-        self.injector.smart_spacing = new_config.smart_spacing
-        self.injector.bullet_mode = new_config.bullet_mode
-        self.injector.email_mode = new_config.email_mode
-        self._current_format_mode = new_config.format_mode
-
-        # Update overlay position and colors
-        self.overlay.set_position(new_config.overlay_position)
-        self.overlay.set_colors(new_config.accent_color, new_config.bg_color)
-
-        # Reload dictionary
         self.dictionary.load()
-
-        if needs_restart and self._running:
-            # Keep the overlay window alive — it's a persistent pywebview window
-            # managed by tray.py. Destroying it would cause webview.start() to
-            # return and exit the app.
-            old_overlay = self.overlay
-            self.shutdown(destroy_overlay=False)
-            self.recorder = AudioRecorder(device=new_config.input_device)
-            self.transcriber = Transcriber(
-                model_size=new_config.model_size,
-                language=new_config.language,
-            )
-            self.hotkey_manager = HotkeyManager(
-                hotkey_str=new_config.hotkey,
-                on_start=self._on_record_start,
-                on_stop=self._on_record_stop,
-                mode=new_config.hotkey_mode,
-            )
-            # Reuse existing overlay (preserves pywebview window + HWND)
-            self.overlay = old_overlay
-            self.overlay.set_position(new_config.overlay_position)
-            self.overlay.set_colors(new_config.accent_color, new_config.bg_color)
-            self.start()
+        self.overlay.set_position(new_config.overlay_position)
+        try:
+            # Compare with what's actually running, not the previous config:
+            # an earlier failed reload may have left them different.
+            if new_config.input_device != self.recorder.device_ref:
+                self.recorder = AudioRecorder(device_ref=new_config.input_device)
+            model_changed = (new_config.model_size, new_config.compute) != self.transcriber.requested
+            if model_changed or not self.transcriber.loaded:
+                self._set_state(STATE_LOADING)
+                self.transcriber = Transcriber(model_size=new_config.model_size,
+                                               language=new_config.language,
+                                               compute=new_config.compute)
+                self.transcriber.load_model()
+            self.transcriber.language = new_config.language
+            if new_config.hotkey != self.hotkey_manager.hotkey or not self.hotkey_manager.registered:
+                self.hotkey_manager.unregister()
+                self.hotkey_manager = self._make_hotkeys(new_config.hotkey)
+                self.hotkey_manager.register()
+        except Exception as e:
+            self._fail(str(e))
+            return
+        self._running = True
+        self._set_state(STATE_IDLE)
 
     @property
     def is_running(self) -> bool:
         return self._running
 
     def run(self) -> None:
-        """Start the application. Blocks until Ctrl+C.
-
-        Legacy entry point for console mode.
-        """
+        """Console mode: start, then block until Ctrl+C."""
         self.start()
+        if not self._running:
+            return
         try:
             self.hotkey_manager.wait()
         except KeyboardInterrupt:
@@ -310,13 +255,9 @@ class ShuperWhisperApp:
 def list_devices() -> None:
     """Print available audio input devices and exit."""
     print("Available audio input devices:\n")
-    for dev in AudioRecorder.list_devices():
-        default = " (DEFAULT)" if dev["is_default"] else ""
-        print(f"  [{dev['index']}] {dev['name']}{default}")
-        print(
-            f"      Channels: {dev['channels']}, Sample Rate: {dev['sample_rate']} Hz"
-        )
-    print("\nSet input_device in config.json to the device index or name.")
+    for d in audio_devices.list_input_devices():
+        default = " (DEFAULT)" if d.is_default else ""
+        print(f"  {d.name}  [{d.to_dict()['hostapi_label']}, {int(d.samplerate)} Hz]{default}")
 
 
 def _enable_dpi_awareness() -> None:
@@ -336,38 +277,10 @@ def _enable_dpi_awareness() -> None:
             pass
 
 
-def _load_env() -> None:
-    """Load environment variables from a .env next to config.json, if present.
-
-    This is where ANTHROPIC_API_KEY comes from; without it the Claude
-    reformatting path silently falls back to templates.
-    """
-    env_path = os.path.join(config_dir(), ".env")
-    if not os.path.exists(env_path):
-        return
-    try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, value = line.split("=", 1)
-                    os.environ.setdefault(key.strip(), value.strip())
-    except OSError:
-        pass
-
-
 def main() -> None:
-    """Entry point for the installed ``shuper-whisper`` gui-script.
-
-    main.py delegates here, so the dev path and the packaged path cannot drift
-    apart -- DPI awareness and .env loading previously lived only in main.py
-    and so were absent from every installed copy (issue #11).
-    """
+    """Entry point for the installed ``shuper-whisper`` gui-script; main.py delegates here (issue #11)."""
     multiprocessing.freeze_support()
     _enable_dpi_awareness()
-
-    # Load API keys (ANTHROPIC_API_KEY, etc.) before anything reads them.
-    _load_env()
 
     if "--list-devices" in sys.argv:
         list_devices()

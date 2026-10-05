@@ -1,20 +1,19 @@
 # ShuperWhisper
 
-**Hotkey-driven voice dictation for Windows** — hold a key, speak, release, and your words are instantly typed wherever your cursor is.
+**Hotkey-driven voice dictation for Windows.** Press a key, speak, press it again, and your words are typed wherever your cursor is.
 
-Built on [faster-whisper](https://github.com/guillaumekientz/faster-whisper) for fast local transcription. No cloud, no subscription.
+Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast local transcription. No cloud, no subscription, no internet needed once the speech model has downloaded.
 
 ---
 
-## Features
+## How it works
 
-- **Hold-to-record** or **toggle mode** — choose your preferred hotkey style
-- **Format modes** — Normal, Professional Email, AI Prompt (cycle with arrow keys)
-- **Smart spacing** — auto-capitalises after punctuation, adapts to cursor context
-- **Custom dictionary** — add words with phonetic hints and audio training
-- **Floating overlay** — animated waveform while recording, spinning glow while processing
-- **Tone settings** — dial in email formality and AI prompt detail levels
-- **Claude API** — optional intelligent reformatting via Anthropic
+- **Press once to start, press again to stop** (default `ctrl+shift+space`). The text is typed at your cursor, in whatever app has focus. Your clipboard is never touched.
+- **Spoken commands:** "new line", "new paragraph", "period", "comma", "question mark", "exclamation point" and "colon" become the real thing.
+- **Clean output:** single spaces, no em-dashes, and fillers like "um" and "uh" are dropped. Spacing and capitalisation follow what's already before your cursor.
+- **Custom dictionary:** add names and jargon. If ShuperWhisper keeps mishearing a word, put what it hears in the hint and it's swapped automatically.
+- **Any microphone,** including Voicemeeter buses and other virtual devices. Devices are remembered by name, so they survive restarts.
+- **NVIDIA GPU** is used automatically when present (`large-v3-turbo` model), with a CPU fallback (`small` model). Settings can force the CPU.
 
 ## Installation
 
@@ -24,18 +23,20 @@ Requires Windows 10/11 x64.
 
 ## Usage
 
-1. ShuperWhisper starts in the system tray
-2. Hold your hotkey (default: `ctrl+shift+space`) to record
-3. Release to transcribe and inject text at the cursor
-4. Right-click the tray icon to open Settings or Quit
+1. ShuperWhisper starts in the system tray.
+2. Press your hotkey (default: `ctrl+shift+space`) and speak.
+3. Press it again; the text is typed at your cursor.
+4. Right-click the tray icon to open Settings or Quit.
+
+The tray icon is grey when idle, red while listening, amber while transcribing, blue while loading the model and dark red on an error. Hover it to see the error message.
 
 ## Development
 
 Requires Python 3.12+ and Node 18+ (the settings window is a React app).
 
 ```bash
-# Install dependencies
-pip install -e .[dev]
+# Install dependencies (the gpu extra adds NVIDIA's CUDA runtime; skip it for CPU-only)
+pip install -e .[dev,gpu]
 
 # Build the settings UI (required — the app loads shuper_whisper/ui/dist)
 cd shuper_whisper/ui && npm install && npm run build && cd ../..

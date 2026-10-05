@@ -108,10 +108,11 @@ class WindowAPI:
     # ------------------------------------------------------------------
 
     def get_devices(self):
-        """List audio input devices."""
+        """List input devices (re-scanned, so newly plugged devices show up)."""
         try:
-            from .audio import AudioRecorder
-            return AudioRecorder.list_devices()
+            from . import audio_devices
+            audio_devices.refresh()
+            return [d.to_dict() for d in audio_devices.list_input_devices()]
         except Exception as e:
             print(f"Error getting devices: {e}")
             return []
@@ -126,52 +127,42 @@ class WindowAPI:
         return load_config().to_dict()
 
     def save_config(self, data):
-        """Validate, save, and apply configuration. Returns {success, config}."""
-        from .config import AppConfig, save_config
+        """Validate, check the mic, save and apply. Returns {success, config|error}."""
+        from . import audio_devices
+        from .config import AppConfig, load_config, save_config
 
         try:
             config = AppConfig(
                 hotkey=data.get('hotkey', 'ctrl+shift+space'),
-                model_size=data.get('model_size', 'base'),
+                model_size=data.get('model_size', 'auto'),
                 input_device=data.get('input_device'),
                 language=data.get('language', 'en'),
-                smart_spacing=data.get('smart_spacing', True),
-                bullet_mode=data.get('bullet_mode', False),
-                email_mode=data.get('email_mode', False),
-                hotkey_mode=data.get('hotkey_mode', 'hold'),
-                format_mode=data.get('format_mode', 'normal'),
-                email_tone=data.get('email_tone', 3),
-                prompt_detail=data.get('prompt_detail', 3),
                 overlay_position=data.get('overlay_position', 'top_center'),
-                accent_color=data.get('accent_color', '#ff4466'),
-                bg_color=data.get('bg_color', '#1a1a2e'),
+                compute=data.get('compute', 'auto'),
             )
             config.validate()
-            save_config(config)
-
+            if config.input_device != load_config().input_device:
+                problem = audio_devices.check(config.input_device)
+                if problem:
+                    return {'success': False, 'error': f"Can't use that microphone: {problem}"}
+            # Apply first, save only what worked, so a bad setting isn't
+            # waiting to fail again on the next launch.
             if self._app:
-                self._app.reload_config(config)
-
+                if not self._app.reload_config(config):
+                    return {'success': False, 'error': 'Finish dictating first, then try again.'}
+                if self._app.error:
+                    return {'success': False, 'error': self._app.error}
+            save_config(config)
             return {'success': True, 'config': config.to_dict()}
-
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
     def get_config_options(self):
         """Return available options for config dropdowns."""
-        from .config import (
-            AppConfig,
-            SUPPORTED_LANGUAGES,
-            VALID_HOTKEY_MODES,
-            VALID_FORMAT_MODES,
-            VALID_OVERLAY_POSITIONS,
-            FORMAT_MODE_LABELS,
-        )
+        from .config import AppConfig, SUPPORTED_LANGUAGES, VALID_OVERLAY_POSITIONS
         return {
             'models': list(AppConfig.VALID_MODELS),
             'languages': SUPPORTED_LANGUAGES,
-            'hotkey_modes': list(VALID_HOTKEY_MODES),
-            'format_modes': {key: FORMAT_MODE_LABELS[key] for key in VALID_FORMAT_MODES},
             'overlay_positions': list(VALID_OVERLAY_POSITIONS),
         }
 
@@ -266,6 +257,19 @@ class WindowAPI:
 
         if not hasattr(self._app, 'recorder') or not hasattr(self._app, 'transcriber'):
             return {'success': False, 'error': 'Recorder or transcriber not available'}
+
+        # Training records through the app's microphone: never alongside a
+        # dictation (or another training run).
+        lock = getattr(self._app, '_session_lock', None)
+        if lock is not None and not lock.acquire(blocking=False):
+            return {'success': False, 'error': 'Finish dictating first, then try again.'}
+        try:
+            return self._train(word)
+        finally:
+            if lock is not None:
+                lock.release()
+
+    def _train(self, word):
 
         def _push(data):
             """Push a training status event to React."""

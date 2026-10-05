@@ -15,6 +15,7 @@ export function useConfig() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const originalConfig = useRef<AppConfig | null>(null);
 
   useEffect(() => {
@@ -49,13 +50,17 @@ export function useConfig() {
   const save = useCallback(async (): Promise<boolean> => {
     if (!config) return false;
     setIsSaving(true);
-    setError(null);
+    setSaveError(null);
     try {
-      await saveConfig(config);
+      const result = await saveConfig(config);
+      if (!result.success) {
+        setSaveError(result.error ?? "Couldn't save settings");
+        return false;
+      }
       originalConfig.current = { ...config };
       return true;
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
+      setSaveError(e instanceof Error ? e.message : "Couldn't save settings");
       return false;
     } finally {
       setIsSaving(false);
@@ -75,6 +80,7 @@ export function useConfig() {
     isSaving,
     isDirty,
     error,
+    saveError,
     updateField,
     save,
   };

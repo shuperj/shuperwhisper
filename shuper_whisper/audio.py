@@ -1,133 +1,162 @@
-"""Audio recording using sounddevice."""
+"""Microphone capture: open at the device's native rate, deliver 16 kHz mono.
+
+The stream is opened when dictation starts and closed when it stops, so the
+Windows mic-in-use indicator is only lit while you're dictating.
+"""
 
 import threading
-from typing import Optional
+import time
+from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
+import soxr
+
+from . import audio_devices
 
 
 class AudioRecorder:
-    """Manages audio input stream and recording state."""
+    TARGET_RATE = 16000
+    BLOCK_SECONDS = 0.03
+    _LEVEL_HISTORY = 60
+    STALL_SECONDS = 2.0  # no audio callback for this long while recording = dead device
 
-    SAMPLE_RATE = 16000
-    CHANNELS = 1
-    BLOCKSIZE = 1024
-
-    def __init__(self, device: Optional[object] = None):
-        self._device = device
-        self._stream: Optional[sd.InputStream] = None
+    def __init__(self, device_ref=None, stream_factory: Optional[Callable] = None,
+                 resolver: Optional[Callable] = None):
+        self._device_ref = device_ref
+        self._stream_factory = stream_factory or sd.InputStream
+        self._resolver = resolver or audio_devices.resolve
+        self._stream = None
+        self._resampler: Optional[soxr.ResampleStream] = None
         self._recording = False
-        self._audio_data: list[np.ndarray] = []
+        self._stopping = False
+        self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
-        self._open_channels = self.CHANNELS
-        # Level monitoring for waveform visualization
-        self._level_history: list[float] = []
+        self._levels: list[float] = []
         self._level_lock = threading.Lock()
+        self.stream_error: Optional[str] = None
+        self._last_callback = 0.0
 
-    def _audio_callback(self, indata, frames, time_info, status):
-        # Mix down to mono if device was opened with multiple channels
-        mono = indata.mean(axis=1, keepdims=True) if indata.shape[1] > 1 else indata
-        if self._recording:
-            self._audio_data.append(mono.copy())
-        # Always compute RMS level for visualization
-        rms = float(np.sqrt(np.mean(mono ** 2)))
-        with self._level_lock:
-            self._level_history.append(rms)
-            # Keep ~2 seconds of history at callback rate (~15 callbacks/sec)
-            if len(self._level_history) > 60:
-                self._level_history = self._level_history[-60:]
+    # -- stream callbacks (PortAudio thread) ---------------------------------
 
-    def open_stream(self) -> None:
-        """Open the audio input stream.
+    def _callback(self, indata, frames, time_info, status) -> None:
+        self._last_callback = time.monotonic()
+        mono = indata.mean(axis=1) if indata.shape[1] > 1 else indata[:, 0]
+        mono = np.ascontiguousarray(mono, dtype=np.float32)
+        if len(mono):
+            # Measured before resampling: the resampler buffers its first chunks.
+            level = float(np.sqrt(np.mean(mono ** 2)))
+            with self._level_lock:
+                self._levels.append(level)
+                del self._levels[:-self._LEVEL_HISTORY]
+        if self._resampler is not None:
+            mono = self._resampler.resample_chunk(mono)
+        if len(mono):
+            with self._lock:
+                if self._recording:
+                    self._chunks.append(mono.copy())
 
-        Some devices (Bluetooth headsets, certain USB interfaces) are stereo-only
-        and reject mono (1-channel) requests with paInvalidChannelCount. Query the
-        device's max channels and open with up to 2; the callback mixes down to mono.
-        """
-        device_info = sd.query_devices(self._device, "input")
-        self._open_channels = max(1, min(int(device_info["max_input_channels"]), 2))
-        self._stream = sd.InputStream(
-            samplerate=self.SAMPLE_RATE,
-            channels=self._open_channels,
-            callback=self._audio_callback,
-            blocksize=self.BLOCKSIZE,
-            device=self._device,
-        )
-        self._stream.start()
+    def _on_finished(self) -> None:
+        if self._recording and not self._stopping:
+            self.stream_error = "The microphone stopped unexpectedly"
 
-    def close_stream(self) -> None:
-        """Stop and close the audio input stream."""
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+    # -- open / close ----------------------------------------------------------
+
+    def _open(self, index: int):
+        info = sd.query_devices(index, "input")
+        channels = max(1, min(int(info["max_input_channels"]), 2))
+        native = int(info["default_samplerate"])
+        common = dict(device=index, channels=channels, dtype="float32",
+                      callback=self._callback, finished_callback=self._on_finished)
+        try:
+            stream = self._stream_factory(samplerate=native,
+                                          blocksize=int(native * self.BLOCK_SECONDS), **common)
+            rate = native
+        except sd.PortAudioError:
+            if "WASAPI" not in sd.query_hostapis(info["hostapi"])["name"]:
+                raise
+            stream = self._stream_factory(
+                samplerate=self.TARGET_RATE,
+                blocksize=int(self.TARGET_RATE * self.BLOCK_SECONDS),
+                extra_settings=sd.WasapiSettings(auto_convert=True), **common)
+            rate = self.TARGET_RATE
+        self._resampler = (soxr.ResampleStream(rate, self.TARGET_RATE, 1, dtype="float32")
+                           if rate != self.TARGET_RATE else None)
+        return stream
 
     def start_recording(self) -> None:
-        """Begin capturing audio frames."""
+        """Open the configured device and start capturing. Raises on failure."""
         with self._lock:
-            self._recording = True
-            self._audio_data = []
+            self._chunks = []
         with self._level_lock:
-            self._level_history.clear()
+            self._levels.clear()
+        self.stream_error = None
+        self._stopping = False
+        try:
+            stream = self._open(self._resolver(self._device_ref))
+        except (audio_devices.DeviceNotFoundError, sd.PortAudioError):
+            # The device may have appeared, or been renumbered (Voicemeeter
+            # restart, Bluetooth), since PortAudio last scanned. Retry once.
+            if not audio_devices.refresh():
+                raise
+            stream = self._open(self._resolver(self._device_ref))
+        audio_devices.stream_opened()
+        self._stream = stream
+        self._recording = True
+        self._last_callback = time.monotonic()
+        try:
+            stream.start()
+        except Exception:
+            self._recording = False
+            self._stream = None
+            stream.close()
+            audio_devices.stream_closed()
+            raise
 
     def stop_recording(self) -> Optional[np.ndarray]:
-        """Stop capturing and return the recorded audio as a flat float32 array.
-
-        Returns None if no audio was captured.
-        """
+        """Close the stream and return everything captured as 16 kHz float32."""
+        self._stopping = True
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+            finally:
+                stream.close()
+                audio_devices.stream_closed()
         with self._lock:
             self._recording = False
-            captured = self._audio_data.copy()
-            self._audio_data = []
-        if not captured:
+            if self._resampler is not None:
+                tail = self._resampler.resample_chunk(np.zeros(0, np.float32), last=True)
+                if len(tail):
+                    self._chunks.append(tail)
+            chunks, self._chunks = self._chunks, []
+        self._resampler = None
+        if not chunks:
             return None
-        return np.concatenate(captured, axis=0).flatten().astype(np.float32)
+        return np.concatenate(chunks).astype(np.float32)
+
+    # -- levels -----------------------------------------------------------------
 
     def get_levels(self, count: int = 30) -> list[float]:
-        """Return the most recent RMS levels for waveform display.
-
-        Returns exactly `count` values, resampled from history.
-        """
         with self._level_lock:
-            history = self._level_history.copy()
-
-        if not history:
-            return [0.0] * count
-
+            history = list(self._levels)
         if len(history) >= count:
-            # Take the most recent `count` values
             return history[-count:]
-
-        # Pad with zeros on the left if not enough history
-        padding = [0.0] * (count - len(history))
-        return padding + history
+        return [0.0] * (count - len(history)) + history
 
     @property
     def is_recording(self) -> bool:
         return self._recording
 
-    @staticmethod
-    def list_devices() -> list[dict]:
-        """Return a list of available audio input devices."""
-        devices = sd.query_devices()
-        result = []
-        default_idx = sd.default.device[0]
-        for i, dev in enumerate(devices):
-            if dev["max_input_channels"] > 0:
-                result.append(
-                    {
-                        "index": i,
-                        "name": dev["name"],
-                        "channels": dev["max_input_channels"],
-                        "sample_rate": dev["default_samplerate"],
-                        "is_default": i == default_idx,
-                    }
-                )
-        return result
+    @property
+    def device_ref(self):
+        return self._device_ref
 
-    @staticmethod
-    def get_default_device_name() -> str:
-        """Return the name of the default input device."""
-        default_device = sd.query_devices(sd.default.device[0])
-        return default_device["name"]
+    def check_alive(self) -> Optional[str]:
+        """While recording: an error message if the device has stopped
+        delivering audio (unplugged, Voicemeeter restarted...), else None."""
+        if not self._recording or self._stopping:
+            return None
+        if not self.stream_error and time.monotonic() - self._last_callback > self.STALL_SECONDS:
+            self.stream_error = "The microphone stopped sending audio"
+        return self.stream_error

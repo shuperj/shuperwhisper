@@ -10,8 +10,8 @@ Usage:
 This is a thin wrapper. The real entry point is shuper_whisper.app:main, which
 is what pyproject's [project.gui-scripts] and the PyInstaller build run.
 Keeping the logic there means the dev path and the packaged path cannot drift
-apart -- see issue #11, where DPI awareness and .env loading lived only here
-and so were silently absent from every installed copy.
+apart -- see issue #11, where DPI awareness lived only here and so was
+silently absent from every installed copy.
 """
 
 from shuper_whisper.app import main

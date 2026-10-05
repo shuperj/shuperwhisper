@@ -2,7 +2,8 @@
 
 import pytest
 
-from shuper_whisper.hotkey import HotkeyManager, parse_hotkey
+from shuper_whisper import hotkey as hotkey_mod
+from shuper_whisper.hotkey import HotkeyError, HotkeyManager, parse_hotkey
 
 
 class TestParseHotkey:
@@ -37,42 +38,55 @@ class TestParseHotkey:
         assert trigger == "a"
 
 
-class TestHotkeyManagerInit:
-    def test_smart_mode_default(self):
-        hm = HotkeyManager("ctrl+space", lambda: None, lambda: None)
-        assert hm.mode == "smart"
+class FakeUser32:
+    def __init__(self, ok=True):
+        self.ok = ok
 
-    def test_smart_mode_always(self):
-        # Mode parameter is ignored, always uses smart mode
-        hm = HotkeyManager("ctrl+space", lambda: None, lambda: None, mode="hold")
-        assert hm.mode == "smart"
+    def RegisterHotKey(self, *a):
+        return 1 if self.ok else 0
 
-    def test_mode_property(self):
-        hm = HotkeyManager("ctrl+space", lambda: None, lambda: None)
-        assert hm.mode == "smart"
+    def UnregisterHotKey(self, *a):
+        return 1
 
-
-class TestSmartModeLogic:
-    def test_starts_not_recording(self):
-        hm = HotkeyManager("f5", lambda: None, lambda: None)
-        assert hm._recording is False
-        assert hm._toggle_active is False
-
-    def test_not_registered_by_default(self):
-        hm = HotkeyManager("f5", lambda: None, lambda: None)
-        assert hm._registered is False
-
-    def test_press_time_initially_none(self):
-        hm = HotkeyManager("f5", lambda: None, lambda: None)
-        assert hm._press_time is None
+    def PeekMessageW(self, *a):
+        return 0
 
 
-class TestArrowKeyRegistration:
-    def test_arrow_hooks_initially_empty(self):
-        hm = HotkeyManager("f5", lambda: None, lambda: None, mode="toggle")
-        assert len(hm._arrow_hooks) == 0
+class TestToggle:
+    def test_first_press_starts_second_stops(self):
+        calls = []
+        hm = HotkeyManager("f9", lambda: calls.append("start"), lambda: calls.append("stop"))
+        hm._on_trigger_press()
+        assert hm.active
+        hm._on_trigger_press()
+        assert calls == ["start", "stop"] and not hm.active
 
-    def test_unregister_arrow_keys_noop_when_empty(self):
-        hm = HotkeyManager("f5", lambda: None, lambda: None, mode="toggle")
-        hm.unregister_arrow_keys()  # Should not raise
-        assert len(hm._arrow_hooks) == 0
+    def test_reset_makes_next_press_start(self):
+        calls = []
+        hm = HotkeyManager("f9", lambda: calls.append("start"), lambda: calls.append("stop"))
+        hm._on_trigger_press()
+        hm.reset()
+        hm._on_trigger_press()
+        assert calls == ["start", "start"]
+
+
+class TestRegister:
+    def test_unknown_key_raises(self):
+        hm = HotkeyManager("ctrl+notakey", lambda: None, lambda: None)
+        with pytest.raises(HotkeyError, match="notakey"):
+            hm.register()
+
+    def test_register_failure_raises(self, monkeypatch):
+        monkeypatch.setattr(hotkey_mod, "user32", FakeUser32(ok=False))
+        hm = HotkeyManager("f9", lambda: None, lambda: None)
+        with pytest.raises(HotkeyError, match="f9"):
+            hm.register()
+        assert not hm.registered
+
+    def test_register_success(self, monkeypatch):
+        monkeypatch.setattr(hotkey_mod, "user32", FakeUser32(ok=True))
+        hm = HotkeyManager("f9", lambda: None, lambda: None)
+        hm.register()
+        assert hm.registered
+        hm.unregister()
+        assert not hm.registered

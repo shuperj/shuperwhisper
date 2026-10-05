@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AppConfig, ConfigOptions, Device } from "@/lib/types";
 import { captureHotkey } from "@/lib/bridge";
-import { Keyboard, Mic, Globe, MapPin, Palette } from "lucide-react";
+import { Keyboard, Mic, Globe, MapPin } from "lucide-react";
 import { StyledSelect } from "./StyledSelect";
 
 interface GeneralTabProps {
@@ -62,18 +62,27 @@ export function GeneralTab({
     })
   );
 
+  const modelLabels: Record<string, string> = {
+    auto: "Auto (best for this PC)",
+    "large-v3-turbo": "Large v3 Turbo",
+    "large-v3": "Large v3",
+  };
   const modelOptions = options.models.map((m) => ({
     value: m,
-    label: m.charAt(0).toUpperCase() + m.slice(1),
+    label: modelLabels[m] ?? m.charAt(0).toUpperCase() + m.slice(1),
   }));
 
+  const deviceId = (name: string, hostapi: string | null) => `${name}|${hostapi ?? ""}`;
   const deviceOptions = [
     { value: "__default__", label: "System Default" },
     ...devices.map((d) => ({
-      value: String(d.index),
-      label: d.name,
+      value: deviceId(d.name, d.hostapi),
+      label: `${d.name} · ${d.hostapi_label}`,
     })),
   ];
+  const currentDevice = config.input_device
+    ? deviceId(config.input_device.name, config.input_device.hostapi)
+    : "__default__";
 
   const positionLabels: Record<string, string> = {
     top_center: "Top Center",
@@ -99,7 +108,7 @@ export function GeneralTab({
       </FieldRow>
 
       <p className="text-[11px] text-text-muted pl-[162px] -mt-2 mb-2">
-        Quick tap = toggle mode | Hold = hold mode
+        Press once to start dictating, again to stop.
       </p>
 
       <div className="border-t border-white/[0.06]" />
@@ -129,10 +138,12 @@ export function GeneralTab({
       {/* Input Device */}
       <FieldRow icon={Mic} label="Input Device">
         <StyledSelect
-          value={config.input_device !== null ? String(config.input_device) : "__default__"}
-          onChange={(v) =>
-            updateField("input_device", v === "__default__" ? null : parseInt(v))
-          }
+          value={currentDevice}
+          onChange={(v) => {
+            if (v === "__default__") return updateField("input_device", null);
+            const d = devices.find((x) => deviceId(x.name, x.hostapi) === v);
+            if (d) updateField("input_device", { name: d.name, hostapi: d.hostapi });
+          }}
           options={deviceOptions}
         />
       </FieldRow>
@@ -148,34 +159,6 @@ export function GeneralTab({
         />
       </FieldRow>
 
-      {/* Appearance */}
-      <div className="glass rounded-xl p-6 mt-6">
-        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-text-muted mb-5">
-          Appearance
-        </h3>
-        <div className="flex items-center gap-10">
-          <div className="flex items-center gap-3">
-            <Palette size={16} className="text-text-muted" />
-            <label className="text-[13px] text-text-secondary">Accent</label>
-            <input
-              type="color"
-              value={config.accent_color}
-              onChange={(e) => updateField("accent_color", e.target.value)}
-              className="w-10 h-10"
-            />
-          </div>
-          <div className="flex items-center gap-3">
-            <Palette size={16} className="text-text-muted" />
-            <label className="text-[13px] text-text-secondary">Background</label>
-            <input
-              type="color"
-              value={config.bg_color}
-              onChange={(e) => updateField("bg_color", e.target.value)}
-              className="w-10 h-10"
-            />
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

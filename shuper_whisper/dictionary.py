@@ -109,3 +109,7 @@ class WordDictionary:
         if not self._entries:
             return ""
         return ", ".join(entry.word for entry in self._entries)
+
+    def get_replacements(self) -> list[tuple[str, str]]:
+        """(heard, word) pairs: a phonetic hint is what Whisper hears for the word."""
+        return [(e.phonetic, e.word) for e in self._entries if e.phonetic]

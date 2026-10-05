@@ -1,11 +1,10 @@
 import { cn } from "@/lib/utils";
-import { Settings, Type, BookOpen } from "lucide-react";
+import { Settings, BookOpen } from "lucide-react";
 
-type Tab = "general" | "formatting" | "dictionary";
+type Tab = "general" | "dictionary";
 
 const tabs: { id: Tab; label: string; icon: typeof Settings }[] = [
   { id: "general", label: "General", icon: Settings },
-  { id: "formatting", label: "Formatting", icon: Type },
   { id: "dictionary", label: "Dictionary", icon: BookOpen },
 ];
 
