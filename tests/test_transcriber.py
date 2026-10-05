@@ -133,3 +133,11 @@ def test_cuda_failure_during_transcribe_retries_on_cpu(monkeypatch):
 def test_requested_reports_configuration():
     t = tr.Transcriber(model_size="auto", compute="cpu", live_typing="off")
     assert t.requested == ("auto", "cpu", "off")
+
+
+def test_transcribe_words_with_timestamps():
+    seg = SimpleNamespace(text=" Hi there.", words=[SimpleNamespace(word=" Hi", end=0.4),
+                                                     SimpleNamespace(word=" there.", end=0.9)])
+    t = tr.Transcriber(model_size="base", device="cpu", compute_type="int8")
+    t._model = type("M", (), {"transcribe": lambda self, audio, **kw: (iter([seg]), None)})()
+    assert t.transcribe_words(np.zeros(16000, np.float32), timestamps=True) == [("Hi", 0.4), ("there.", 0.9)]

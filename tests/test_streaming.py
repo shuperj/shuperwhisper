@@ -49,12 +49,35 @@ class TestLocalAgreement:
         assert la.flush() == ["a", "b"]
 
 
+class TestRewording:
+    def test_reworded_commit_keeps_following_words(self):
+        la = LocalAgreement()
+        la.update("we will be all right".split())
+        la.update("we will be all right so".split())          # stable: all six
+        newly, tentative = la.update("we will be alright so let's go to the shop".split())
+        assert tentative == ["let's", "go", "to", "the", "shop"]
+        assert la.flush("we will be alright so let's go to the shop now".split()) == \
+            ["let's", "go", "to", "the", "shop", "now"]
+
+    def test_final_pass_with_different_wording(self):
+        la = LocalAgreement()
+        la.update("I'm gonna send it".split())
+        la.update("I'm gonna send it to".split())
+        assert la.flush("I'm going to send it to Dana.".split()) == ["to", "Dana."]
+
+    def test_empty_final_pass_keeps_last_hypothesis(self):
+        la = LocalAgreement()
+        la.update(["hello"])
+        assert la.flush([]) == ["hello"]
+
+
 class FakeTranscriber:
     def __init__(self, decodes):
         self.decodes = list(decodes)
         self.calls = []
 
-    def transcribe_words(self, audio, initial_prompt=None, hotwords=None, beam_size=1):
+    def transcribe_words(self, audio, initial_prompt=None, hotwords=None, beam_size=1,
+                         timestamps=False):
         self.calls.append((len(audio), initial_prompt, beam_size))
         return self.decodes.pop(0) if self.decodes else []
 
@@ -143,3 +166,33 @@ def test_transcriber_error_reaches_on_finished():
                          speech_spans=lambda a: [(0, len(a))])
     s._run()
     assert finished == ["CUDA out of memory"]
+
+
+def test_vad_dropout_closes_the_utterance():
+    ticks = [(0.4, [(0, 6400)]), (0.4, [(0, 12800)]), (2.0, []), (0.4, [(0, 6400)])]
+    decodes = [["how", "are"], ["how", "are", "you"], ["doing", "today"]]
+    _s, hyps, _f, _a = run(ticks, decodes)
+    assert Hypothesis("", "", True) not in hyps[:2]
+    finals = [h for h in hyps if h.final]
+    assert finals[0] == Hypothesis("you", "", True)       # closed on the dropout
+    assert any("doing" in h.tentative for h in hyps)      # next utterance not swallowed
+
+
+def test_cap_cuts_at_a_word_boundary():
+    class Timed(FakeTranscriber):
+        def transcribe_words(self, audio, initial_prompt=None, hotwords=None, beam_size=1,
+                             timestamps=False):
+            self.calls.append((len(audio), initial_prompt, beam_size))
+            if timestamps:
+                return [("one", 10.0), ("two", 23.0), ("thr-", 25.4)]
+            return ["one", "two"]
+    clock = Clock()
+    hyps = []
+    s = StreamingSession(transcriber=Timed([]), read_audio=lambda: np.zeros(0, np.float32),
+                         on_hypothesis=hyps.append, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None, interval=0.0,
+                         speech_spans=lambda a: [(0, len(a))], clock=clock)
+    s._buffer = np.full(int(25.5 * SR), 0.1, np.float32)
+    s._tick()
+    assert hyps == [Hypothesis("one two", "", True)]
+    assert abs(len(s._buffer) / SR - 2.5) < 0.01          # audio after "two" carried over

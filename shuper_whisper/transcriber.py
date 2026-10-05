@@ -177,9 +177,11 @@ class Transcriber:
         return " ".join(t for t in (s.text.strip() for s in segments) if t)
 
     def transcribe_words(self, audio: np.ndarray, initial_prompt: Optional[str] = None,
-                         hotwords: Optional[str] = None, beam_size: int = 1) -> list[str]:
+                         hotwords: Optional[str] = None, beam_size: int = 1,
+                         timestamps: bool = False) -> list:
         """Fast pass for live dictation: words of the whole buffer.
 
+        Returns words, or (word, end_seconds) pairs with ``timestamps=True``.
         No VAD filter here -- StreamingSession already segments by speech.
         """
         if self._model is None:
@@ -194,7 +196,12 @@ class Transcriber:
             kwargs["initial_prompt"] = initial_prompt
         if hotwords:
             kwargs["hotwords"] = hotwords
-        segments, _info = self._model.transcribe(audio, **kwargs)
+        if timestamps:
+            kwargs["word_timestamps"] = True
+            segments = self._run_model(audio, kwargs)
+            return [(w.word.strip(), float(w.end)) for s in segments for w in (s.words or [])
+                    if w.word.strip()]
+        segments = self._run_model(audio, kwargs)
         return " ".join(s.text.strip() for s in segments).split()
 
     @property

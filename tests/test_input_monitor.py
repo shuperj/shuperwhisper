@@ -15,10 +15,23 @@ def test_injected_key_ignored():
     assert not m.user_input
 
 
-def test_hotkey_keys_ignored():
-    m = InputMonitor(ignore_vks=(0xA2, 0x20))
-    m._on_key(0x20, 0)
+def test_hotkey_chord_ignored():
+    held = {0xA2}
+    m = InputMonitor(ignore_vks=(0xA2,), trigger_vk=0x20, key_down=lambda vk: vk in held)
     m._on_key(0xA2, 0)
+    m._on_key(0x20, 0)
+    assert not m.user_input
+
+
+def test_plain_space_while_typing_counts():
+    m = InputMonitor(ignore_vks=(0xA2,), trigger_vk=0x20, key_down=lambda vk: False)
+    m._on_key(0x20, 0)
+    assert m.user_input
+
+
+def test_modifierless_hotkey_trigger_always_ignored():
+    m = InputMonitor(trigger_vk=0x78, key_down=lambda vk: False)
+    m._on_key(0x78, 0)
     assert not m.user_input
 
 

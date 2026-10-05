@@ -51,6 +51,30 @@ def _drop_words(text: str, skip: list[str]) -> tuple[str, list[str]]:
     return " ".join(words), skip
 
 
+def _same_field(a, b) -> bool:
+    """Same HWND, and the same UIA element when both reads succeeded (a
+    timed-out UIA read returns None and mustn't look like a focus change)."""
+    if a is None or b is None:
+        return a == b
+    hwnd_a, uia_a = a
+    hwnd_b, uia_b = b
+    if hwnd_a != hwnd_b:
+        return False
+    return uia_a is None or uia_b is None or uia_a == uia_b
+
+
+def _newlines(text: str) -> str:
+    """RichEdit reports our Shift+Enter as \r, Word as \v; compare them as \n."""
+    return text.replace("\r\n", "\n").replace("\r", "\n").replace("\v", "\n")
+
+
+def _starts_clause(context: Optional[str]) -> bool:
+    """Is the next word at the start of a clause (empty field, after a newline
+    or punctuation)? Spoken commands like "new line" only count there."""
+    tail = (context or "").rstrip(" \t")
+    return not tail or tail[-1] in ",.;:!?\r\n\v"
+
+
 def _without_fragment(tentative: str) -> str:
     """Whisper marks a cut-off word with a trailing hyphen ("f-"); don't show it."""
     words = tentative.split()
@@ -65,7 +89,7 @@ class LiveWriter:
                  field_id: Callable[[], object] = current_field_id,
                  monitor_factory: Callable[..., InputMonitor] = InputMonitor,
                  replacements: Callable[[], Iterable[tuple[str, str]]] = lambda: (),
-                 wait_modifiers: Callable[[], bool] = wait_for_modifiers_released):
+                 wait_modifiers: Callable[..., bool] = wait_for_modifiers_released):
         self._send = send
         self._read_context = read_context
         self._field_id = field_id
@@ -84,9 +108,9 @@ class LiveWriter:
 
     # -- session ---------------------------------------------------------------
 
-    def begin(self, ignore_vks: Iterable[int] = ()) -> None:
+    def begin(self, ignore_vks: Iterable[int] = (), trigger_vk: int = 0) -> None:
         self._wait_modifiers()
-        self._monitor = self._monitor_factory(ignore_vks=ignore_vks)
+        self._monitor = self._monitor_factory(ignore_vks=ignore_vks, trigger_vk=trigger_vk)
         self._monitor.start()
         self._pending, self._skip = "", []
         self._attach()
@@ -117,17 +141,23 @@ class LiveWriter:
     def _still_ours(self) -> bool:
         if self._monitor and self._monitor.user_input:
             return False
-        if self._field_id() != self._field:
+        if not _same_field(self._field_id(), self._field):
             return False
         if not self._tail:
             return True
         actual = self._read_context()
         if actual is None:
             return True
-        expected = ((self._before or "") + self._committed + self._tail).replace("\r", "")
-        actual = actual.replace("\r", "")
+        expected = _newlines((self._before or "") + self._committed + self._tail)
+        actual = _newlines(actual)
         n = min(len(expected), len(actual), _CHECK_CHARS)
         return actual[-n:] == expected[-n:]
+
+    def _can_revise(self) -> bool:
+        """Backspacing is only safe if we can tell when the field changed
+        under us: the input hooks are running, or UIA can read the field."""
+        return bool(self._monitor and getattr(self._monitor, "healthy", True)) \
+            or self._read_context() is not None
 
     # -- updates -----------------------------------------------------------------
 
@@ -141,6 +171,10 @@ class LiveWriter:
                 stable = " ".join(words[:-1])
                 tentative = f"{self._pending} {tentative}".strip()
         tentative = _without_fragment(tentative)
+        if final:
+            stable = _without_fragment(stable)
+        if not self._can_revise():
+            tentative = ""  # can't verify the field: type committed words only
 
         if not self._still_ours():
             self._skip = [_norm(w) for w in self._tail.split()]
@@ -152,16 +186,27 @@ class LiveWriter:
 
         replacements = list(self._replacements())
         context = self._context()
-        new_stable = join(clean(stable, replacements, final=final), context) if stable else ""
+        new_stable = ""
+        if stable:
+            new_stable = join(clean(stable, replacements, final=final,
+                                    starts_clause=_starts_clause(context)), context)
         tail_context = context if not new_stable else (context or "") + new_stable
         new_tail = ""
         if tentative and not final:
-            new_tail = join(clean(tentative, replacements, final=False), tail_context)
+            new_tail = join(clean(tentative, replacements, final=False,
+                                  starts_clause=_starts_clause(tail_context)), tail_context)
 
         target = new_stable + new_tail
         common = _common_prefix(self._tail, target)
         backspaces = len(self._tail) - common
         if backspaces or target[common:]:
+            # A held Ctrl/Alt/Win (e.g. mid stop-chord) would turn Backspace
+            # into delete-word or undo, and letters into shortcuts.
+            if not self._wait_modifiers(timeout=3.0 if final else 1.0):
+                if final:
+                    return  # never type under a held modifier; leave what's there
+                self._pending = f"{stable} {self._pending}".strip()
+                return
             self._send(target[common:], backspaces=backspaces)
         self._committed += new_stable
         self._tail = new_tail

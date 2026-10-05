@@ -22,7 +22,9 @@ class Field:
 
 
 class Monitor:
-    def __init__(self, ignore_vks=()):
+    healthy = True
+
+    def __init__(self, ignore_vks=(), trigger_vk=0):
         self.user_input = False
 
     def start(self): pass
@@ -35,13 +37,14 @@ class Env:
         self.fields = {"a": Field(text, readable)}
         self.focus = "a"
         self.monitor = Monitor()
+        self.modifiers_held = False
         self.writer = LiveWriter(
             send=lambda t, backspaces=0: self.fields[self.focus].send(t, backspaces),
             read_context=lambda: self.fields[self.focus].context(),
-            field_id=lambda: self.focus,
-            monitor_factory=lambda ignore_vks=(): self.monitor,
+            field_id=lambda: (self.focus, None),
+            monitor_factory=lambda ignore_vks=(), trigger_vk=0: self.monitor,
             replacements=lambda: [("mackinaw", "Mackinac")],
-            wait_modifiers=lambda: True,
+            wait_modifiers=lambda timeout=1.0: not self.modifiers_held,
         )
 
     @property
@@ -81,10 +84,10 @@ def test_rules_apply_to_stable_text():
 def test_new_line_split_across_updates():
     env = Env()
     env.writer.begin()
-    env.writer.update("Thanks new", "line")
-    assert env.field.text == "Thanks\n"   # "new" held back, then "new line" shown as a newline
+    env.writer.update("Thanks, new", "line")
+    assert env.field.text == "Thanks,\n"   # "new" held back, then "new line" shown as a newline
     env.writer.update("line see you", "", final=True)
-    assert env.field.text == "Thanks\nSee you"
+    assert env.field.text == "Thanks,\nSee you"
 
 
 def test_word_fragment_in_tail_not_shown():
@@ -168,3 +171,65 @@ def test_spoken_period_at_end_of_utterance():
     env.writer.update("send it today period", "")
     env.writer.update("", "", final=True)
     assert env.field.text == "Send it today."
+
+
+class RichEdit(Field):
+    """Reports newlines as \\r, like Win11 Notepad."""
+
+    def context(self):
+        return self.text.replace("\n", "\r")[-200:]
+
+
+def test_richedit_newline_does_not_freeze():
+    env = Env()
+    env.fields["a"] = RichEdit()
+    w = env.writer
+    w.begin()
+    w.update("hello, new line", "this is")
+    w.update("", "this was")
+    w.update("this was great.", "", final=True)
+    assert env.field.text == "Hello,\nThis was great."
+
+
+def test_new_line_words_mid_sentence_in_live_mode():
+    env = Env()
+    env.writer.begin()
+    env.writer.update("We launched a new", "line of")
+    env.writer.update("line of products.", "", final=True)
+    assert env.field.text == "We launched a new line of products."
+
+
+def test_held_modifier_defers_revision_without_losing_words():
+    env = Env()
+    w = env.writer
+    w.begin()
+    w.update("", "hello there")
+    env.modifiers_held = True
+    w.update("hello there", "friend")          # can't type now
+    assert env.field.text == "Hello there" and env.field.backspaces == 0
+    env.modifiers_held = False
+    w.update("", "friend.")
+    w.update("friend.", "", final=True)
+    assert env.field.text == "Hello there friend."
+
+
+def test_unverifiable_field_gets_committed_words_only():
+    env = Env(readable=False)
+    env.monitor.healthy = False
+    w = env.writer
+    w.begin()
+    w.update("", "hello")
+    assert env.field.text == ""
+    w.update("hello world.", "", final=True)
+    assert env.field.text == "Hello world." and env.field.backspaces == 0
+
+
+def test_uia_timeout_is_not_a_focus_change():
+    env = Env()
+    ids = iter([("a", (1, 2)), ("a", None), ("a", (1, 2))])
+    env.writer._field_id = lambda: next(ids, ("a", (1, 2)))
+    w = env.writer
+    w.begin()
+    w.update("", "hello")
+    w.update("", "hello there")
+    assert env.field.text == "Hello there"

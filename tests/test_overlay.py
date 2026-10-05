@@ -56,3 +56,15 @@ def test_reposition_uses_caret_then_window(monkeypatch):
     ind.reposition()
     assert moves[0] == (494, 326)
     assert moves[1][1] == 700 - ind.HEIGHT - 24
+
+
+def test_error_auto_hide_spares_a_newer_session(monkeypatch):
+    import time
+    ind = CaretIndicator()
+    ind.ERROR_SECONDS = 0.05
+    w = Win()
+    ind.set_window(w)
+    ind.show_error("Microphone: unplugged")
+    ind.show()                       # the user retries straight away
+    time.sleep(0.2)
+    assert ind.is_visible and w.js[-1] == "show()"

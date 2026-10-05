@@ -4,6 +4,7 @@ import ctypes
 import multiprocessing
 import sys
 import threading
+import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -25,6 +26,9 @@ STATE_PROCESSING = "processing"
 STATE_LOADING = "loading"
 STATE_ERROR = "error"
 
+# Stop by itself after this long without speech (live mode: StreamingSession).
+AUTO_STOP_SECONDS = 30.0
+
 # If even the loudest 100 ms of a recording is below this RMS, it's silence
 # (Whisper hallucinates on silence).
 SILENCE_RMS_THRESHOLD = 0.005
@@ -40,6 +44,14 @@ def is_silent(audio: Optional[np.ndarray]) -> bool:
     return loudest < SILENCE_RMS_THRESHOLD
 
 
+class _Dictation:
+    """One press-to-press dictation."""
+
+    def __init__(self):
+        self.session: Optional[StreamingSession] = None
+        self.stopping = False
+
+
 class ShuperWhisperApp:
     """Wires together audio, transcription, the hotkey, the indicator and typing.
 
@@ -53,8 +65,8 @@ class ShuperWhisperApp:
         self._state_callback: Optional[Callable[[str], None]] = None
         self._running = False
         self._session_lock = threading.Lock()
-        self._level_timer: Optional[threading.Timer] = None
-        self._session: Optional[StreamingSession] = None
+        self._token_lock = threading.Lock()
+        self._current: Optional[_Dictation] = None
         self._session_error: Optional[str] = None
 
         self.recorder = AudioRecorder(device_ref=config.input_device)
@@ -85,19 +97,26 @@ class ShuperWhisperApp:
     def _run_async(self, fn, *args) -> None:
         threading.Thread(target=fn, args=args, daemon=True).start()
 
-    def _hotkey_vks(self) -> list[int]:
+    def _hotkey_keys(self) -> tuple[list[int], int]:
+        """(modifier VKs, trigger VK) of the configured hotkey."""
         modifiers, trigger = parse_hotkey(self.config.hotkey)
-        vks = [get_vk(trigger)]
+        vks: list[int] = []
         for mod in modifiers:
             vks.extend(MODIFIER_VK_MAP.get(mod, []))
-        return vks
+        return vks, get_vk(trigger)
 
     # -- dictation session -----------------------------------------------------
+    #
+    # Each dictation is a _Dictation token. Every way a dictation can end (the
+    # hotkey, auto-stop, a dead mic, the session finishing by itself) goes
+    # through the token, so a late or duplicate stop can't touch the next
+    # dictation, and the session lock is released exactly once.
 
     def _on_record_start(self) -> None:
         if not self._session_lock.acquire(blocking=False):
             self.hotkey_manager.reset()  # previous dictation is still finishing
             return
+        token = _Dictation()
         try:
             self.recorder.start_recording()
         except Exception as e:
@@ -106,52 +125,68 @@ class ShuperWhisperApp:
             self._fail(f"Microphone: {e}")
             self.overlay.show_error(self.error)
             return
-        self._session_error = None
-        self.writer.begin(ignore_vks=self._hotkey_vks())
-        self._set_state(STATE_RECORDING)
-        self.overlay.show()
-        self._start_level_monitoring()
-        if not self.transcriber.live:
-            return  # type-on-stop: _on_record_stop runs one accurate pass
-        self._session = StreamingSession(
-            transcriber=self.transcriber,
-            read_audio=self.recorder.read_new,
-            on_hypothesis=self._on_hypothesis,
-            on_finished=self._on_session_finished,
-            on_auto_stop=self._auto_stop,
-            prompt=self.dictionary.get_initial_prompt,
-            hotwords=self.dictionary.get_hotwords() or None,
-            interval=0.4 if self.transcriber.device == "cuda" else 1.0,
-        )
-        self._session.start()
+        try:
+            with self._token_lock:
+                self._current = token
+            self._session_error = None
+            modifiers, trigger = self._hotkey_keys()
+            self.writer.begin(ignore_vks=modifiers, trigger_vk=trigger)
+            self._set_state(STATE_RECORDING)
+            self.overlay.show()
+            if self.transcriber.live:
+                token.session = StreamingSession(
+                    transcriber=self.transcriber,
+                    read_audio=self.recorder.read_new,
+                    on_hypothesis=lambda h: self._on_hypothesis(h, token),
+                    on_finished=lambda error: self._on_session_finished(error, token),
+                    on_auto_stop=lambda: self._auto_stop(token),
+                    prompt=self.dictionary.get_initial_prompt,
+                    hotwords=self.dictionary.get_hotwords() or None,
+                    interval=0.4 if self.transcriber.device == "cuda" else 1.0,
+                )
+            self._start_level_monitoring(token)
+            if token.session:
+                token.session.start()
+            # else type-on-stop: _on_record_stop runs one accurate pass
+        except Exception as e:
+            self._on_session_finished(f"Couldn't start dictation: {e}", token)
 
-    def _on_hypothesis(self, hypothesis: Hypothesis) -> None:
-        if self._session_error:
+    @property
+    def _session(self) -> Optional[StreamingSession]:
+        current = self._current
+        return current.session if current else None
+
+    def _on_hypothesis(self, hypothesis: Hypothesis, token: "_Dictation") -> None:
+        if token is not self._current or self._session_error:
             return
         try:
             self.writer.update(hypothesis.stable_delta, hypothesis.tentative,
                                final=hypothesis.final)
         except InjectionBlocked as e:
             self._session_error = str(e)
-            if self._session:
-                self._session.stop()
+            self._on_record_stop(token)
             return
         self.overlay.reposition(use_uia=True)
 
-    def _on_record_stop(self) -> None:
-        self._stop_level_monitoring()
+    def _on_record_stop(self, token: Optional["_Dictation"] = None) -> None:
+        """Stop the current dictation (or ``token``'s, if it's still current)."""
+        with self._token_lock:
+            current = self._current
+            if current is None or (token is not None and token is not current) or current.stopping:
+                return
+            current.stopping = True
         self._set_state(STATE_PROCESSING)
         self.overlay.set_state("finishing")
-        if self._session:
-            self._session.stop()
+        if current.session:
+            current.session.stop()
         else:
-            self._run_async(self._finish_batch)
+            self._run_async(self._finish_batch, current)
 
-    def _auto_stop(self) -> None:
+    def _auto_stop(self, token: "_Dictation") -> None:
         self.hotkey_manager.reset()
-        self._on_record_stop()
+        self._on_record_stop(token)
 
-    def _finish_batch(self) -> None:
+    def _finish_batch(self, token: "_Dictation") -> None:
         """Type-on-stop: one beam-5 pass with VAD over the whole recording."""
         error = None
         try:
@@ -163,14 +198,18 @@ class ShuperWhisperApp:
                     hotwords=self.dictionary.get_hotwords() or None,
                 )
                 if text:
-                    self._on_hypothesis(Hypothesis(text, "", True))
+                    self._on_hypothesis(Hypothesis(text, "", True), token)
         except Exception as e:
             error = str(e)
-        self._on_session_finished(error)
+        self._on_session_finished(error, token)
 
-    def _on_session_finished(self, error: Optional[str]) -> None:
-        """End of a dictation, however it ended (streaming thread or batch thread)."""
-        self._stop_level_monitoring()
+    def _on_session_finished(self, error: Optional[str], token: "_Dictation") -> None:
+        """End of a dictation, however it ended. Runs once per token."""
+        with self._token_lock:
+            if token is not self._current:
+                return
+            self._current = None
+        token.stopping = True  # stops the level loop
         self.hotkey_manager.reset()
         try:
             try:
@@ -186,34 +225,41 @@ class ShuperWhisperApp:
                 self._set_state(STATE_IDLE)
                 self.overlay.hide()
         finally:
-            self._session = None
             self._session_lock.release()
 
-    def _start_level_monitoring(self) -> None:
-        ticks = {"n": 0}
+    # Type-on-stop has no VAD running, so the level loop provides its auto-stop.
+    QUIET_LEVEL = 0.01
+
+    def _start_level_monitoring(self, token: "_Dictation") -> None:
+        """~30 fps while ``token`` is recording: overlay levels, caret
+        tracking, dead-mic detection and the silence auto-stop."""
+        state = {"n": 0, "last_loud": time.monotonic()}
 
         def _update():
+            if token.stopping or token is not self._current:
+                return
             if self.recorder.check_alive():
-                # Device vanished mid-dictation: end the session now rather
-                # than waiting for the second hotkey press.
-                self._level_timer = None
+                # Device vanished mid-dictation: end it now rather than
+                # waiting for the second hotkey press.
                 self.hotkey_manager.reset()
-                self._run_async(self._on_record_stop)
+                self._run_async(self._on_record_stop, token)
+                return
+            levels = self.recorder.get_levels(self.overlay.BAR_COUNT)
+            now = time.monotonic()
+            if max(levels, default=0.0) >= self.QUIET_LEVEL:
+                state["last_loud"] = now
+            elif not token.session and now - state["last_loud"] >= AUTO_STOP_SECONDS:
+                self._run_async(self._auto_stop, token)
                 return
             if self.overlay.is_visible:
-                self.overlay.update_levels(self.recorder.get_levels(self.overlay.BAR_COUNT))
-                ticks["n"] += 1
-                if ticks["n"] % 5 == 0:
+                self.overlay.update_levels(levels)
+                state["n"] += 1
+                if state["n"] % 5 == 0:
                     self.overlay.reposition()
-                self._level_timer = threading.Timer(0.033, _update)
-                self._level_timer.daemon = True
-                self._level_timer.start()
+            timer = threading.Timer(0.033, _update)
+            timer.daemon = True
+            timer.start()
         _update()
-
-    def _stop_level_monitoring(self) -> None:
-        if self._level_timer:
-            self._level_timer.cancel()
-            self._level_timer = None
 
     # -- lifecycle -------------------------------------------------------------
 
@@ -244,7 +290,9 @@ class ShuperWhisperApp:
         print(f"[app] Ready. Press {self.config.hotkey} to dictate.", flush=True)
 
     def shutdown(self, destroy_overlay: bool = True) -> None:
-        self._stop_level_monitoring()
+        current = self._current
+        if current:
+            current.stopping = True
         self.hotkey_manager.unregister()
         if destroy_overlay:
             self.overlay.destroy()
@@ -331,12 +379,16 @@ def _enable_dpi_awareness() -> None:
     scaled displays.
     """
     try:
-        # Windows 10 1703+ -- per-monitor v2
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        # Windows 10 1703+: per-monitor v2 (DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # per-monitor v1 (Windows 8.1+)
     except Exception:
         try:
-            # Older fallback -- system DPI aware
-            ctypes.windll.user32.SetProcessDPIAware()
+            ctypes.windll.user32.SetProcessDPIAware()  # system DPI aware
         except Exception:
             pass
 
