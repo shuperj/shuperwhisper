@@ -10,7 +10,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from .audio import AudioRecorder
-from .config import AppConfig, load_config
+from .config import AppConfig, config_dir, load_config
 from .dictionary import WordDictionary
 from .formatter import TextFormatter
 from .hotkey import HotkeyManager
@@ -337,12 +337,12 @@ def _enable_dpi_awareness() -> None:
 
 
 def _load_env() -> None:
-    """Load environment variables from D:/dev/.env if available.
+    """Load environment variables from a .env next to config.json, if present.
 
     This is where ANTHROPIC_API_KEY comes from; without it the Claude
     reformatting path silently falls back to templates.
     """
-    env_path = os.path.join("D:", os.sep, "dev", ".env")
+    env_path = os.path.join(config_dir(), ".env")
     if not os.path.exists(env_path):
         return
     try:
@@ -357,18 +357,16 @@ def _load_env() -> None:
 
 
 def main() -> None:
-    """Process entry point.
+    """Entry point for the installed ``shuper-whisper`` gui-script.
 
-    This is the target of pyproject's [project.gui-scripts], so it is what the
-    installed `shuper-whisper` command and the PyInstaller build run. main.py
-    delegates here so the dev path and the packaged path cannot drift apart.
+    main.py delegates here, so the dev path and the packaged path cannot drift
+    apart -- DPI awareness and .env loading previously lived only in main.py
+    and so were absent from every installed copy (issue #11).
     """
     multiprocessing.freeze_support()
     _enable_dpi_awareness()
 
-    print("[main] Starting ShuperWhisper...", flush=True)
-
-    # Load API keys (ANTHROPIC_API_KEY, etc.) from workspace .env
+    # Load API keys (ANTHROPIC_API_KEY, etc.) before anything reads them.
     _load_env()
 
     if "--list-devices" in sys.argv:
@@ -376,7 +374,6 @@ def main() -> None:
         sys.exit(0)
 
     config = load_config()
-    print(f"[main] Config loaded: hotkey={config.hotkey}, model={config.model_size}", flush=True)
 
     if "--console" in sys.argv:
         app = ShuperWhisperApp(config)
@@ -386,7 +383,5 @@ def main() -> None:
         # so a top-level import would be circular.
         from .tray import TrayController
 
-        print("[main] Creating TrayController...", flush=True)
         tray = TrayController(config)
-        print("[main] Starting tray.run()...", flush=True)
         tray.run()

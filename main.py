@@ -7,8 +7,8 @@ Usage:
     python main.py --console        Start dictation (console mode)
     python main.py --list-devices   Show audio input devices
 
-This is a thin wrapper. The real entry point lives in shuper_whisper.app:main,
-which is what pyproject's [project.gui-scripts] and the PyInstaller build run.
+This is a thin wrapper. The real entry point is shuper_whisper.app:main, which
+is what pyproject's [project.gui-scripts] and the PyInstaller build run.
 Keeping the logic there means the dev path and the packaged path cannot drift
 apart -- see issue #11, where DPI awareness and .env loading lived only here
 and so were silently absent from every installed copy.

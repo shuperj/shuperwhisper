@@ -73,6 +73,7 @@ def test_main_list_devices_exits_without_starting_ui(mocker, stub_main):
 
     listing.assert_called_once()
     tray.assert_not_called()
+    assert "config" not in stub_main
 
 
 def test_main_calls_freeze_support_first(mocker, stub_main):
