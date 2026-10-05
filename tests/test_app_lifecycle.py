@@ -326,3 +326,17 @@ def test_is_silent_uses_loudest_window():
     assert app_mod.is_silent(quiet_then_word) is False
     assert app_mod.is_silent(np.full(16000, 0.001, np.float32)) is True
     assert app_mod.is_silent(None) is True
+
+
+def test_force_model_reload(make_app):
+    a = make_app()
+    a.start()
+    t = a.transcriber
+    a.reload_config(a.config, force_model=True)
+    assert a.transcriber is not t
+
+
+def test_state_tracked(make_app):
+    a = make_app()
+    a.start()
+    assert a.state == "idle"

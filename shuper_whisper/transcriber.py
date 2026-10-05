@@ -1,7 +1,9 @@
 """Speech-to-text transcription using faster-whisper."""
 
 import ctypes
+import functools
 import os
+import subprocess
 import sys
 from typing import Optional
 
@@ -31,6 +33,20 @@ def runtime_dir() -> str:
         return os.path.join(os.path.dirname(sys.executable), "cuda")
     base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
     return os.path.join(base, "ShuperWhisper", "cuda")
+
+
+@functools.lru_cache(maxsize=1)
+def gpu_name() -> Optional[str]:
+    """Name of the first NVIDIA GPU, via nvidia-smi (None if unavailable)."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=3,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        name = out.stdout.strip().splitlines()[0].strip()
+        return name or None
+    except Exception:
+        return None
 
 
 def _cuda_device_count() -> int:

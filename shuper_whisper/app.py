@@ -50,6 +50,7 @@ class ShuperWhisperApp:
     def __init__(self, config: AppConfig):
         self.config = config
         self.error: Optional[str] = None
+        self.state = STATE_IDLE
         self._state_callback: Optional[Callable[[str], None]] = None
         self._running = False
         self._session_lock = threading.Lock()
@@ -71,6 +72,7 @@ class ShuperWhisperApp:
         self._state_callback = callback
 
     def _set_state(self, state: str, error: Optional[str] = None) -> None:
+        self.state = state
         self.error = error
         if self._state_callback:
             self._state_callback(state)
@@ -257,7 +259,7 @@ class ShuperWhisperApp:
         """A dictation is being recorded or typed."""
         return self._session_lock.locked()
 
-    def reload_config(self, new_config: AppConfig) -> bool:
+    def reload_config(self, new_config: AppConfig, force_model: bool = False) -> bool:
         """Apply settings, touching only what differs from what's running.
 
         Never raises. Returns False without changing anything while a
@@ -266,12 +268,12 @@ class ShuperWhisperApp:
         if not self._session_lock.acquire(blocking=False):
             return False
         try:
-            self._apply_config(new_config)
+            self._apply_config(new_config, force_model)
         finally:
             self._session_lock.release()
         return True
 
-    def _apply_config(self, new_config: AppConfig) -> None:
+    def _apply_config(self, new_config: AppConfig, force_model: bool = False) -> None:
         self.config = new_config
         self.dictionary.load()
         try:
@@ -281,7 +283,7 @@ class ShuperWhisperApp:
                 self.recorder = AudioRecorder(device_ref=new_config.input_device)
             wanted = (new_config.model_size, new_config.compute, new_config.live_typing)
             model_changed = wanted != self.transcriber.requested
-            if model_changed or not self.transcriber.loaded:
+            if force_model or model_changed or not self.transcriber.loaded:
                 self._set_state(STATE_LOADING)
                 self.transcriber = Transcriber(model_size=new_config.model_size,
                                                language=new_config.language,
