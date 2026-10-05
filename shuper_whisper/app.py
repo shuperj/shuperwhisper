@@ -50,6 +50,7 @@ class _Dictation:
     def __init__(self):
         self.session: Optional[StreamingSession] = None
         self.stopping = False
+        self.field = None  # where the indicator was placed
 
 
 class ShuperWhisperApp:
@@ -136,6 +137,7 @@ class ShuperWhisperApp:
             self.writer.begin(ignore_vks=modifiers, trigger_vk=trigger)
             self._set_state(STATE_RECORDING)
             self.overlay.show()
+            token.field = self.writer.field
             if self.transcriber.live:
                 token.session = StreamingSession(
                     transcriber=self.transcriber,
@@ -169,7 +171,9 @@ class ShuperWhisperApp:
             self._session_error = str(e)
             self._on_record_stop(token)
             return
-        self.overlay.reposition(use_uia=True)
+        if self.writer.field != token.field:  # dictation moved to another field
+            token.field = self.writer.field
+            self.overlay.reposition(use_uia=True)
 
     def _on_record_stop(self, token: Optional["_Dictation"] = None) -> None:
         """Stop the current dictation (or ``token``'s, if it's still current)."""
@@ -234,9 +238,9 @@ class ShuperWhisperApp:
     QUIET_LEVEL = 0.01
 
     def _start_level_monitoring(self, token: "_Dictation") -> None:
-        """~30 fps while ``token`` is recording: overlay levels, caret
-        tracking, dead-mic detection and the silence auto-stop."""
-        state = {"n": 0, "last_loud": time.monotonic()}
+        """~30 fps while ``token`` is recording: overlay levels, dead-mic
+        detection and the silence auto-stop."""
+        state = {"last_loud": time.monotonic()}
 
         def _update():
             if token.stopping or token is not self._current:
@@ -256,9 +260,6 @@ class ShuperWhisperApp:
                 return
             if self.overlay.is_visible:
                 self.overlay.update_levels(levels)
-                state["n"] += 1
-                if state["n"] % 5 == 0:
-                    self.overlay.reposition()
             timer = threading.Timer(0.033, _update)
             timer.daemon = True
             timer.start()
@@ -282,6 +283,7 @@ class ShuperWhisperApp:
         with self._session_lock:
             self._set_state(STATE_LOADING)
             uia.warm_up()
+            self.overlay.start()
             gpu_runtime.cleanup()  # old runtime versions, before CUDA loads
             try:
                 self._migrate_device()

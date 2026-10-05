@@ -17,6 +17,26 @@ class TestLocalAgreement:
         la.update(["send", "the"])
         assert la.update(["send", "the", "report"]) == (["send", "the"], ["report"])
 
+    def test_last_word_never_committed(self):
+        la = LocalAgreement()
+        la.update(["testing", "things", "out."])
+        assert la.update(["testing", "things", "out."]) == (["testing", "things"], ["out."])
+        assert la.update(["testing", "things", "out", "right", "now."]) == (["out"], ["right", "now."])
+
+    def test_full_stop_at_a_pause_stays_revisable(self):
+        la2 = LocalAgreement()
+        la2.update("testing things out. Right".split())
+        assert la2.update("testing things out. Right".split()) == (["testing", "things", "out"], [".", "Right"])
+        # speech continued: Whisper drops the full stop, so it never gets typed
+        assert la2.update("testing things out right now".split()) == (["right"], ["now"])
+
+    def test_kept_full_stop_is_committed_with_the_next_word(self):
+        la = LocalAgreement()
+        la.update("done. Next".split())
+        la.update("done. Next".split())
+        assert la.update("done. Next one".split()) == ([".", "Next"], ["one"])
+        assert la.flush("done. Next one.".split()) == ["one."]
+
     def test_punctuation_and_case_ignored_for_agreement(self):
         la = LocalAgreement()
         la.update(["Send", "the"])
@@ -25,9 +45,9 @@ class TestLocalAgreement:
 
     def test_stable_never_shrinks(self):
         la = LocalAgreement()
-        la.update(["a", "b", "c"])
         la.update(["a", "b", "c", "d"])
-        assert la.update(["a", "x"]) == ([], ["d"])   # contradicting hypothesis ignored
+        la.update(["a", "b", "c", "d", "e"])
+        assert la.update(["a", "x"]) == ([], ["e"])   # contradicting hypothesis ignored
 
     def test_flush_returns_rest(self):
         la = LocalAgreement()
@@ -79,7 +99,10 @@ class FakeTranscriber:
     def transcribe_words(self, audio, initial_prompt=None, hotwords=None, beam_size=1,
                          timestamps=False):
         self.calls.append((len(audio), initial_prompt, beam_size))
-        return self.decodes.pop(0) if self.decodes else []
+        words = self.decodes.pop(0) if self.decodes else []
+        if timestamps:  # a word every 0.25 s
+            return [(w, (i + 1) * 0.25) for i, w in enumerate(words)]
+        return words
 
 
 class Clock:
@@ -115,18 +138,54 @@ def run(ticks, decodes, prompt=""):
     return session, hyps, finished, auto
 
 
-def test_words_stream_then_finalize_on_silence():
+def test_words_stream_then_utterance_ends_with_a_revisable_full_stop():
     ticks = [
         (0.4, [(0, 6400)]),
         (0.4, [(0, 12800)]),
-        (0.8, [(0, 12800)]),          # 0.8 s silence after speech -> utterance ends
+        (1.2, [(0, 12800)]),          # 1.2 s silence after speech -> utterance ends
     ]
     decodes = [["send", "the"], ["send", "the", "report"], ["Send", "the", "report."]]
     _s, hyps, finished, _ = run(ticks, decodes)
     assert hyps[0] == Hypothesis("", "send the", False)
     assert hyps[1] == Hypothesis("send the", "report", False)
-    assert hyps[2] == Hypothesis("report.", "", True)
+    assert hyps[2] == Hypothesis("report", ".", False)    # the "." can still be taken back
+    assert hyps[3] == Hypothesis(".", "", True)           # dictation ended: it stays
     assert finished == [None]
+
+
+def test_sentence_break_taken_back_when_speech_continues():
+    ticks = [
+        (0.4, [(0, 6400)]),
+        (0.4, [(0, 12800)]),
+        (1.2, [(0, 12800)]),                       # pause: utterance ends at "out."
+        (0.4, [(0, 12800), (32000, 38400)]),       # speech continues
+    ]
+    decodes = [["testing", "things"], ["testing", "things", "out."],
+               ["testing", "things", "out."],                        # close (timestamps)
+               ["testing", "things", "out", "right", "now"]]        # boundary re-read: no "."
+    _s, hyps, _f, _a = run(ticks, decodes)
+    assert hyps[2] == Hypothesis("out", ".", False)
+    assert hyps[3] == Hypothesis("", "right now", False)            # the "." is withdrawn
+    assert hyps[-1] == Hypothesis("right now", "", True)
+    assert not any("." in h.stable_delta for h in hyps)
+
+
+def test_sentence_break_kept_when_whisper_still_wants_it():
+    ticks = [(0.4, [(0, 6400)]), (0.4, [(0, 12800)]), (1.2, [(0, 12800)]),
+             (0.4, [(0, 12800), (32000, 38400)]), (0.4, [(0, 12800), (32000, 44800)])]
+    decodes = [["all", "done"], ["all", "done."], ["all", "done."],
+               ["all", "done.", "Next"], ["all", "done.", "Next", "thing"]]
+    _s, hyps, _f, _a = run(ticks, decodes)
+    assert Hypothesis(". Next", "thing", False) in hyps
+
+
+def test_prompt_leaves_out_words_still_in_the_audio():
+    s = StreamingSession(transcriber=FakeTranscriber([]), read_audio=lambda: np.zeros(0, np.float32),
+                         on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None, prompt=lambda: "Vocabulary: Dana.")
+    s._committed = ["one", "two", "three", "four"]
+    s._agreement.seed(["three", "four"])
+    assert s._prompt() == "Vocabulary: Dana. one two"
 
 
 def test_no_speech_emits_nothing_and_final_is_quiet():
@@ -140,13 +199,6 @@ def test_stop_mid_utterance_does_final_beam_pass():
     s, hyps, finished, _ = run(ticks, decodes)
     assert hyps[-1] == Hypothesis("Hello world.", "", True)
     assert s._transcriber.calls[-1][2] == 5
-
-
-def test_prompt_includes_dictionary_and_committed_text():
-    ticks = [(0.4, [(0, 6400)]), (0.8, [(0, 6400)]), (0.4, [(0, 6400)])]
-    decodes = [["one"], ["One."], ["two"]]
-    s, _h, _f, _a = run(ticks, decodes, prompt="Vocabulary: Dana.")
-    assert s._transcriber.calls[2][1] == "Vocabulary: Dana. One."
 
 
 def test_auto_stop_after_30s_without_speech():
@@ -194,5 +246,13 @@ def test_cap_cuts_at_a_word_boundary():
                          speech_spans=lambda a: [(0, len(a))], clock=clock)
     s._buffer = np.full(int(25.5 * SR), 0.1, np.float32)
     s._tick()
-    assert hyps == [Hypothesis("one two", "", True)]
-    assert abs(len(s._buffer) / SR - 2.5) < 0.01          # audio after "two" carried over
+    assert hyps == [Hypothesis("one two", "", False)]
+    assert abs(len(s._buffer) / SR - 15.5) < 0.01         # "two" onwards carried over
+    assert s._agreement.stable_words == ["two"]
+
+
+def test_held_full_stop_survives_a_final_reread_that_drops_it():
+    la = LocalAgreement()
+    la.commit_all("if anything changes.".split())
+    la.seed(["anything", "changes."])
+    assert la.flush(["anything", "changes"]) == ["."]

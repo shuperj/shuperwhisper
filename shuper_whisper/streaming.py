@@ -4,8 +4,16 @@ LocalAgreement-2: a word is *stable* once two consecutive hypotheses agree on
 it (and everything before it). Stable words are committed; the rest of the
 newest hypothesis is a *tentative* tail the writer may still rewrite.
 
-Utterances are bounded by Silero VAD: after END_SILENCE of quiet, everything
-is committed and the buffer restarts, so each decode stays short.
+Utterances are bounded by Silero VAD: after END_SILENCE of quiet the words
+are committed and the buffer restarts, so each decode stays short. Whisper
+treats every utterance as a finished sentence, though, so a mid-sentence
+pause would leave "testing things out. Right now." -- therefore the sentence
+punctuation at an utterance's end stays revisable, and the audio of its last
+few words is carried into the next utterance. When speech continues, the
+silence between them is shortened (Whisper reads a long pause as a sentence
+end regardless of grammar) and Whisper re-reads the boundary with the new
+words as context; if the sentence didn't end ("out right now"), the full
+stop is taken back.
 """
 
 import difflib
@@ -31,6 +39,14 @@ def _norm(word: str) -> str:
     return re.sub(r"[^\w']", "", word).lower()
 
 
+_SENTENCE_END = ".?!…"
+
+
+def _sentence_end(word: str) -> str:
+    """Trailing sentence punctuation of ``word`` ("" if none)."""
+    return word[len(word.rstrip(_SENTENCE_END)):]
+
+
 class LocalAgreement:
     # Share of the committed characters a re-worded hypothesis must still
     # contain before we trust it to tell us where the new words start.
@@ -42,6 +58,20 @@ class LocalAgreement:
     def reset(self) -> None:
         self._prev: list[str] = []
         self._stable_words: list[str] = []
+        # The last committed word went out without its sentence punctuation:
+        # Whisper ends sentences at pauses ("out. Right") and changes its mind
+        # when speech continues ("out right now"), so the "." stays tentative
+        # until the next word is committed.
+        self._held = False
+        self._held_mark = ""
+
+    def _pending_end(self, rebased: list[str]) -> list[str]:
+        """The held punctuation as the latest hypothesis has it, as a token."""
+        n = len(self._stable_words)
+        if not self._held or n == 0 or n > len(rebased):
+            return []
+        end = _sentence_end(rebased[n - 1])
+        return [end] if end else []
 
     @property
     def stable_count(self) -> int:
@@ -62,7 +92,9 @@ class LocalAgreement:
         normed = [_norm(w) for w in words]
         committed = [_norm(w) for w in self._stable_words]
         if normed[:n] == committed:
-            return self._stable_words + list(words[n:])
+            # Same words: take the new wording, so a changed mind about a held
+            # sentence mark ("out." -> "out") shows up.
+            return list(words)
         a, b = "".join(committed), "".join(normed)
         if not a:
             return self._stable_words + list(words[n:])
@@ -76,8 +108,43 @@ class LocalAgreement:
         for i, w in enumerate(normed):
             total += len(w)
             if total >= end_b:
-                return self._stable_words + list(words[i + 1:])
+                # Committed words keep their wording, but the boundary word's
+                # sentence mark follows the new hypothesis.
+                last = self._stable_words[-1]
+                last = last[:len(last) - len(_sentence_end(last))] + _sentence_end(words[i])
+                return self._stable_words[:-1] + [last] + list(words[i + 1:])
         return list(self._stable_words)
+
+    @property
+    def stable_words(self) -> list[str]:
+        return list(self._stable_words)
+
+    def seed(self, words: list[str]) -> None:
+        """Start a new utterance whose audio begins with these already
+        committed words (carried over); any held punctuation stays held."""
+        self._stable_words = list(words)
+        self._prev = list(words)
+        if not words:
+            self._held = False
+
+    def commit_all(self, words: list[str]) -> tuple[list[str], list[str]]:
+        """End of an utterance, mid-dictation: commit every word, but keep
+        the last word's sentence punctuation tentative (see _held).
+        Returns (newly committed, tentative)."""
+        rebased = (self._rebase(words) if words else None) or self._prev
+        newly = self._pending_end(rebased) + rebased[len(self._stable_words):]
+        self._stable_words = list(rebased)
+        self._prev = list(rebased)
+        if not newly:
+            return [], self._pending_end(rebased)
+        end = _sentence_end(newly[-1])
+        if end:
+            newly[-1] = newly[-1][:-len(end)]
+            if not newly[-1]:
+                newly.pop()
+        self._held = bool(end)
+        self._held_mark = end
+        return newly, [end] if end else []
 
     def update(self, words: list[str]) -> tuple[list[str], list[str]]:
         """Returns (newly stable words, tentative words).
@@ -94,12 +161,19 @@ class LocalAgreement:
             if _norm(a) != _norm(b):
                 break
             agree += 1
+        # Never commit the newest word: it carries Whisper's guess at how the
+        # buffer ends ("out." during a pause) and must stay revisable.
+        agree = min(agree, len(rebased) - 1)
         self._prev = rebased
         newly: list[str] = []
         if agree > n:
-            newly = rebased[n:agree]
+            newly = self._pending_end(rebased) + rebased[n:agree]
+            end = _sentence_end(newly[-1])
+            if end:
+                newly[-1] = newly[-1][:-len(end)]
+            self._held = bool(end)
             self._stable_words = rebased[:agree]
-        return newly, rebased[len(self._stable_words):]
+        return newly, self._pending_end(rebased) + rebased[len(self._stable_words):]
 
     def flush(self, words: Optional[list[str]] = None) -> list[str]:
         """End of utterance: everything not yet stable becomes stable.
@@ -110,7 +184,13 @@ class LocalAgreement:
         rebased = self._rebase(words) if words else None
         if rebased is None:
             rebased = self._prev
-        rest = rebased[len(self._stable_words):]
+        new_words = rebased[len(self._stable_words):]
+        pending = self._pending_end(rebased)
+        if self._held and not pending and not new_words:
+            # Nothing was said after the held mark; a re-read of just that
+            # fragment often drops it, but the sentence did end there.
+            pending = [self._held_mark]
+        rest = pending + new_words
         self.reset()
         return rest
 
@@ -122,11 +202,17 @@ def silero_speech_spans(audio: np.ndarray) -> list[tuple[int, int]]:
 
 
 class StreamingSession:
-    END_SILENCE = 0.7
+    END_SILENCE = 0.8
     MAX_UTTERANCE = 25.0
     AUTO_STOP = 30.0
     PROMPT_CHARS = 200
-    CAP_KEEP = 1.0  # at the cap, the last second is carried into the next utterance
+    CAP_KEEP = 1.0       # at the cap, commit only words ending a second before the end
+    CARRY_SECONDS = 1.5  # audio of the last committed words carried into the next utterance
+    CARRY_WORDS = 4
+    JOIN_GAP = 0.25      # silence left between carried words and new speech
+    # VAD pads speech and word timestamps run early: speech has to end this
+    # far past the carried words to count as new.
+    NEW_SPEECH_MARGIN = 0.4
 
     def __init__(self, transcriber, read_audio: Callable[[], np.ndarray],
                  on_hypothesis: Callable[[Hypothesis], None],
@@ -152,8 +238,10 @@ class StreamingSession:
         self._thread: Optional[threading.Thread] = None
         self._agreement = LocalAgreement()
         self._buffer = np.zeros(0, np.float32)
-        self._committed = ""   # text of finished utterances (prompt context)
-        self._utterance = ""   # stable text of the utterance in progress
+        self._committed: list[str] = []  # every committed word, for the prompt
+        self._carried = 0      # how many of those are still in the buffer's audio
+        self._carry_end = 0    # buffer sample where the carried words end
+        self._gap_closed = True  # the pause after the carried words was shortened
         self._last_tentative = ""
         self._last_speech = clock()
         self._auto_stopped = False
@@ -175,9 +263,10 @@ class StreamingSession:
     # -- internals ---------------------------------------------------------------
 
     def _prompt(self) -> Optional[str]:
-        # Only *finished* utterances: words of the current one are still in
-        # the buffer, and Whisper skips audio that the prompt already covers.
-        parts = [self._prompt_fn() or "", self._committed.strip()[-self.PROMPT_CHARS:]]
+        # Only words whose audio has left the buffer: Whisper skips audio that
+        # the prompt already covers, which shifted every later word.
+        done = self._committed[:len(self._committed) - self._agreement.stable_count]
+        parts = [self._prompt_fn() or "", " ".join(done)[-self.PROMPT_CHARS:]]
         return " ".join(p for p in parts if p) or None
 
     def _decode(self, beam_size: int = 1, timestamps: bool = False):
@@ -193,11 +282,7 @@ class StreamingSession:
         if not final and not stable_text and tentative_text == self._last_tentative:
             return
         self._last_tentative = tentative_text
-        if stable_text:
-            self._utterance += " " + stable_text
-        if final:
-            self._committed += self._utterance
-            self._utterance = ""
+        self._committed += [w for w in newly if _norm(w)]
         self._on_hypothesis(Hypothesis(stable_text, tentative_text, final))
 
     def _append_audio(self) -> list:
@@ -206,18 +291,57 @@ class StreamingSession:
             self._buffer = np.concatenate([self._buffer, chunk])
         return self._speech_spans(self._buffer) if len(self._buffer) else []
 
-    def _cut_at_cap(self) -> None:
-        """A long stretch without a pause: commit up to a word boundary about a
-        second from the end and carry the rest of the audio over, so no word
-        is split between utterances."""
-        timed = self._decode(timestamps=True)
+    def _close_utterance(self, timed: list, keep: int) -> None:
+        """Commit the first ``keep`` words (their last sentence mark stays
+        revisable), then restart the buffer at the audio of the last few of
+        them so the next utterance re-reads that boundary."""
         words = [w for w, _end in timed]
+        newly, tentative = self._agreement.commit_all(words[:keep])
+        self._emit(newly, tentative)
+        if keep == 0:
+            return
+        end_t = timed[keep - 1][1]
+        k = 1
+        while k < min(self.CARRY_WORDS, keep):
+            earlier = timed[keep - k - 2][1] if keep - k - 2 >= 0 else 0.0
+            if end_t - earlier > self.CARRY_SECONDS:
+                break
+            k += 1
+        start_t = timed[keep - k - 1][1] if keep - k - 1 >= 0 else 0.0
+        self._agreement.seed(self._agreement.stable_words[-k:])
+        start = max(0, int(start_t * SAMPLE_RATE))
+        self._buffer = self._buffer[start:]
+        self._carry_end = max(0, int(end_t * SAMPLE_RATE) - start)
+        self._gap_closed = False
+
+    @property
+    def _margin(self) -> int:
+        return int(self.NEW_SPEECH_MARGIN * SAMPLE_RATE) if self._carry_end else 0
+
+    def _close_gap(self, spans: list) -> list:
+        """Once speech resumes after carried words, cut the pause between
+        them down to JOIN_GAP, so Whisper judges the boundary on the words."""
+        if self._gap_closed or not self._carry_end:
+            return spans
+        resumed = [s for s in spans if s[0] > self._carry_end + self._margin]
+        if not resumed:
+            return spans
+        self._gap_closed = True
+        keep = int(self.JOIN_GAP * SAMPLE_RATE)
+        cut_from, cut_to = self._carry_end + keep // 2, resumed[0][0] - keep // 2
+        if cut_to - cut_from > SAMPLE_RATE // 10:
+            self._buffer = np.concatenate([self._buffer[:cut_from], self._buffer[cut_to:]])
+            spans = self._speech_spans(self._buffer)
+        return spans
+
+    def _cut_at_cap(self) -> None:
+        """A long stretch without a pause: close the utterance at a word
+        boundary about a second from the end, so no word is split."""
+        timed = self._decode(timestamps=True)
         limit = len(self._buffer) / SAMPLE_RATE - self.CAP_KEEP
         keep = sum(1 for _w, end in timed if end <= limit)
         keep = min(max(keep, self._agreement.stable_count), len(timed))
-        self._emit(self._agreement.flush(words[:keep]), [], final=True)
-        cut = timed[keep - 1][1] if keep else limit
-        self._buffer = self._buffer[max(0, int(cut * SAMPLE_RATE)):]
+        self._close_utterance(timed, keep)
 
     def _tick(self) -> None:
         spans = self._append_audio()
@@ -229,35 +353,50 @@ class StreamingSession:
                 # Speech vanished (VAD dropout or it was noise): close the
                 # utterance so stale agreement can't swallow the next one.
                 self._emit(self._agreement.flush(), [], final=True)
+                self._carry_end = 0
             if len(self._buffer) > 2 * SAMPLE_RATE:
                 self._buffer = self._buffer[-SAMPLE_RATE // 2:]
             if not self._auto_stopped and now - self._last_speech >= self.AUTO_STOP:
                 self._auto_stopped = True
                 self._on_auto_stop()
             return
+        spans = self._close_gap(spans)
+        if not spans:
+            return
         speech_end = spans[-1][1]
         silence_after = (len(self._buffer) - speech_end) / SAMPLE_RATE
         self._last_speech = now - silence_after
+        if speech_end <= self._carry_end + self._margin:
+            # Only the carried-over words so far: wait for new speech, and
+            # don't let the silence after them pile up.
+            limit = speech_end + SAMPLE_RATE // 2
+            if len(self._buffer) > limit + SAMPLE_RATE:
+                # keep the newest 0.3 s: speech may be starting that VAD hasn't flagged yet
+                self._buffer = np.concatenate([self._buffer[:limit],
+                                               self._buffer[-int(0.3 * SAMPLE_RATE):]])
+            return
         if len(self._buffer) >= self.MAX_UTTERANCE * SAMPLE_RATE and silence_after < self.END_SILENCE:
             self._cut_at_cap()
             return
-        words = self._decode()
         if silence_after >= self.END_SILENCE:
-            self._emit(self._agreement.flush(words), [], final=True)
-            self._buffer = self._buffer[speech_end:]
-        else:
-            newly, tentative = self._agreement.update(words)
-            self._emit(newly, tentative)
+            timed = self._decode(timestamps=True)
+            self._close_utterance(timed, len(timed))
+            return
+        words = self._decode()
+        newly, tentative = self._agreement.update(words)
+        self._emit(newly, tentative)
 
     def _run(self) -> None:
         error: Optional[str] = None
         try:
             while not self._stop.wait(self._interval):
                 self._tick()
-            spans = self._append_audio()
-            if spans:
+            spans = self._close_gap(self._append_audio())
+            if spans and spans[-1][1] > self._carry_end + self._margin:
                 self._emit(self._agreement.flush(self._decode(beam_size=5)), [], final=True)
             else:
+                # nothing new since the last utterance closed: its held
+                # sentence mark stands
                 self._emit(self._agreement.flush(), [], final=True)
         except Exception as e:
             error = str(e)

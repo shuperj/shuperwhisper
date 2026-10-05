@@ -22,7 +22,6 @@ from .app import (
 from . import autostart, system_theme
 from .bridge import WindowAPI
 from .config import AppConfig, load_config
-from .overlay import INDICATOR_HTML, CaretIndicator
 
 # Icon colors for each state
 _COLORS = {
@@ -105,8 +104,8 @@ class TrayController:
     """Manages the system tray icon and bridges it to the app.
 
     Architecture: The main thread runs pywebview.start() permanently.
-    The overlay window is created at startup (hidden) and persists for the
-    lifetime of the app. Settings windows are created on demand.
+    A hidden host window keeps pywebview's loop alive for the lifetime of the
+    app. Settings windows are created on demand.
     """
 
     def __init__(self, config: AppConfig):
@@ -115,7 +114,7 @@ class TrayController:
         self.app.set_state_callback(self._on_state_change)
         self._icon: Optional[pystray.Icon] = None
         self._current_state = STATE_IDLE
-        self._overlay_window = None
+        self._host_window = None
 
         # Shared API instance — app reference wired here, window set per-settings-open
         self._api = WindowAPI()
@@ -198,16 +197,11 @@ class TrayController:
         # start() never raises; failures show as the error state.
         threading.Thread(target=self.app.start, daemon=True).start()
 
-    def _on_overlay_loaded(self) -> None:
-        """Called when the overlay webview DOM is fully loaded."""
-        # Non-activating, hidden from Alt+Tab
-        self.app.overlay.apply_win32_styles()
-
     def run(self) -> None:
         """Create the tray icon and run the event loop.
 
         pystray runs in a background thread. The main thread runs pywebview.start()
-        permanently, with the overlay window kept alive for the app's lifetime.
+        permanently, with a hidden host window kept alive for the app's lifetime.
         """
         self._icon = pystray.Icon(
             name="ShuperWhisper",
@@ -223,26 +217,12 @@ class TrayController:
             daemon=True,
         ).start()
 
-        # Create the overlay pywebview window (hidden, frameless, always on top)
-        self._overlay_window = webview.create_window(
-            'ShuperWhisper Indicator',
-            html=INDICATOR_HTML,
-            width=CaretIndicator.ERROR_WIDTH,
-            height=CaretIndicator.HEIGHT,
-            frameless=True,
-            hidden=True,
-            on_top=True,
-            transparent=True,
-            focus=False,
-        )
+        # pywebview needs a window to run its loop; this hidden one lives for
+        # the whole session while settings windows come and go. (The dictation
+        # indicator is a native window of its own, see overlay.py.)
+        self._host_window = webview.create_window(
+            'ShuperWhisper', html='<html></html>', width=1, height=1,
+            frameless=True, hidden=True, focus=False)
 
-        # Wire the overlay window to the app's overlay controller
-        self.app.overlay.set_window(self._overlay_window)
-
-        # Register loaded event for Win32 style application
-        self._overlay_window.events.loaded += self._on_overlay_loaded
-
-        # Start pywebview event loop on the main thread (blocks forever).
-        # The overlay window persists; settings windows come and go.
-        # When all windows are destroyed (via _quit), start() returns.
+        # Blocks until every window is destroyed (via _quit).
         webview.start()

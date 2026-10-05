@@ -86,6 +86,8 @@ class FakeIndicator:
 
 
 class FakeWriter:
+    field = None
+
     def __init__(self, **kw):
         self.updates = []
         self.blocked = False
