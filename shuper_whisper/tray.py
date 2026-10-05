@@ -196,6 +196,8 @@ class TrayController:
 
         # start() never raises; failures show as the error state.
         threading.Thread(target=self.app.start, daemon=True).start()
+        if "--settings" in sys.argv:  # open Settings straight away
+            self._open_settings(icon, None)
 
     def run(self) -> None:
         """Create the tray icon and run the event loop.

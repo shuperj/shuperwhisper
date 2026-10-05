@@ -12,10 +12,10 @@ import { DictionarySection } from "@/components/DictionarySection";
 // Memory and accuracy from benchmarks/results/*-full.md (live typing, real speech).
 const MODEL_LABELS: Record<string, string> = {
   auto: "Automatic (recommended)",
-  "large-v3-turbo": "Large v3 Turbo: most accurate, about 1.5 GB",
-  small: "Small: about 1 GB, twice the mistakes",
-  base: "Base: about 0.6 GB, three times the mistakes",
-  tiny: "Tiny: about 0.4 GB, least accurate",
+  "large-v3-turbo": "Large v3 Turbo (1.5 GB)",
+  small: "Small (1 GB)",
+  base: "Base (0.6 GB)",
+  tiny: "Tiny (0.4 GB)",
 };
 
 export default function App() {
@@ -48,7 +48,7 @@ export default function App() {
   const busy = status.state === "loading";
   const modelDescription = busy
     ? "Loading the speech model…"
-    : `${system?.compute ?? ""}. Smaller models use less memory but get more words wrong.`;
+    : `${system?.compute ?? ""}. Turbo is the most accurate; on hard audio Small gets about twice as many words wrong, Base and Tiny three times.`;
 
   return (
     <div className="h-full overflow-y-auto">
