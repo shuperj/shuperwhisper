@@ -20,9 +20,10 @@ from .caret import field_id as current_field_id
 from .input_monitor import InputMonitor
 from .text_rules import clean, join
 
-# First words of multi-word spoken commands. Held back while the next word is
-# unknown so "new" + "line" can still become a newline.
-_HOLD_BACK = frozenset({"new", "question", "exclamation", "full"})
+# Words that may start or be a spoken command. Held back while the next word
+# is unknown, so "new" + "line" can still become a newline and a trailing
+# "period" can be judged once we know whether a pause followed it.
+_HOLD_BACK = frozenset({"new", "question", "exclamation", "full", "period", "colon"})
 _CHECK_CHARS = 50
 
 

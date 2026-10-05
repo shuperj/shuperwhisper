@@ -186,3 +186,14 @@ class TestPartial:
 
     def test_partial_dash_becomes_trailing_comma(self):
         assert clean("I went home —", final=False) == "I went home,"
+
+
+class TestChunks:
+    def test_period_at_chunk_end_is_a_word(self):
+        assert clean("the trial period", final=False) == "the trial period"
+
+    def test_period_at_utterance_end_is_a_command(self):
+        assert clean("the trial period") == "the trial."
+
+    def test_new_line_at_chunk_end_is_words(self):
+        assert clean("a new line", final=False) == "a new line"

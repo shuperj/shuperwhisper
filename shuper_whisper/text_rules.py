@@ -73,12 +73,15 @@ def _apply_replacements(text: str, replacements: Iterable[tuple[str, str]]) -> s
     return text
 
 
-def _apply_commands(text: str) -> str:
+def _apply_commands(text: str, final: bool = True) -> str:
+    # In a chunk of a longer stream (final=False) the end of the text is not
+    # a pause, so it doesn't count as the edge of a command.
+    end = r"\s*$" if final else r"(?!)"
     edge_before = rf"(?:^|(?<=[{_PUNCT_CLASS}]))"
     for phrase, mark in _BREAK_COMMANDS:
         word = _phrase_pattern(phrase)
         pattern = (rf"(?:{edge_before}\s*{word}[{_PUNCT_CLASS}]?"
-                   rf"|\s*{word}(?=[{_PUNCT_CLASS}]|\s*$)[{_PUNCT_CLASS}]?)\s*")
+                   rf"|\s*{word}(?=[{_PUNCT_CLASS}]|{end})[{_PUNCT_CLASS}]?)\s*")
         text = re.sub(pattern, mark + _CAP, text, flags=re.IGNORECASE)
     for phrase, mark in _ALWAYS_COMMANDS:
         cap = _CAP if mark in _SENTENCE_END else ""
@@ -88,7 +91,7 @@ def _apply_commands(text: str) -> str:
         cap = _CAP if mark in _SENTENCE_END else ""
         word = _phrase_pattern(phrase)
         pattern = (rf"[{_PUNCT_CLASS}]\s*{word}[{_PUNCT_CLASS}]?"
-                   rf"|\s*{word}(?:[{_PUNCT_CLASS}]|(?=\s*$))")
+                   rf"|\s*{word}(?:[{_PUNCT_CLASS}]|(?={end}))")
         text = re.sub(pattern, mark + cap, text, flags=re.IGNORECASE)
     return text
 
@@ -134,7 +137,7 @@ def clean(text: str, replacements: Iterable[tuple[str, str]] = (), final: bool =
     With ``final=False`` (a chunk of a longer stream) trailing commas are kept.
     """
     text = _apply_replacements(text, replacements)
-    text = _apply_commands(text)
+    text = _apply_commands(text, final)
     text = _FILLER_RE.sub(_drop_filler, text)
     text = _DASH_RE.sub(", ", text)
     text = _TRAILING_ELLIPSIS_RE.sub("", text)

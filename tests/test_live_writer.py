@@ -152,3 +152,19 @@ def test_next_session_continues_unreadable_field():
     w.begin()
     w.update("then more.", "", final=True)
     assert env.field.text == "First part. Then more."
+
+
+def test_period_word_split_across_updates():
+    env = Env()
+    env.writer.begin()
+    env.writer.update("the trial period", "lasts")
+    env.writer.update("lasts a month.", "", final=True)
+    assert env.field.text == "The trial period lasts a month."
+
+
+def test_spoken_period_at_end_of_utterance():
+    env = Env()
+    env.writer.begin()
+    env.writer.update("send it today period", "")
+    env.writer.update("", "", final=True)
+    assert env.field.text == "Send it today."
