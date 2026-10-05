@@ -21,6 +21,7 @@
 - Never write to the clipboard.
 - Config stores the input device as `{"name": str, "hostapi": str | None}` or `null`, never as an index (a legacy int is migrated at startup).
 - Hotkey is toggle-only: the first press starts, the second press stops.
+- GPU is optional. `compute: "cpu"` (or env `SHUPER_WHISPER_DEVICE=cpu`) forces CPU, and the app must fully work without any CUDA DLLs.
 - Tests: `python -m pytest tests/ -q`. Run them before every commit.
 - Conventional commits. End each commit message with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - All work happens on branch `feat/stage1-foundation`, which ends as one PR on Gitea. Never merge it.
@@ -60,8 +61,9 @@ and in `[project.optional-dependencies]`, add the following after `dev`:
 
 ```toml
 gpu = [
-    "nvidia-cublas-cu12",
-    "nvidia-cudnn-cu12>=9,<10",
+    # Same versions the in-app GPU setup downloads (gpu_runtime.WHEELS, stage 3).
+    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cudnn-cu12==9.27.0.42",
 ]
 ```
 
@@ -89,7 +91,8 @@ git commit -m "build: add soxr, comtypes and the CUDA runtime extra; require ctr
 - Test: `tests/test_config.py` (rewrite)
 
 **Interfaces:**
-- Produces: `AppConfig(hotkey: str = "ctrl+shift+space", model_size: str = "auto", input_device: dict | int | None = None, language: str = "en", overlay_position: str = "top_center")`
+- Produces: `AppConfig(hotkey: str = "ctrl+shift+space", model_size: str = "auto", input_device: dict | int | None = None, language: str = "en", overlay_position: str = "top_center", compute: str = "auto")`
+- Produces: `VALID_COMPUTE = ("auto", "cpu")`
 - Produces: `AppConfig.VALID_MODELS = ("auto", "tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")`
 - Produces: `VALID_OVERLAY_POSITIONS`, `SUPPORTED_LANGUAGES`, `load_config(path=None)`, `save_config(config, path=None)` and `config_dir()`, all unchanged.
 - Removed: `VALID_HOTKEY_MODES`, `VALID_FORMAT_MODES`, `FORMAT_MODE_LABELS`, `FORMAT_MODE_ORDER`.
@@ -102,6 +105,7 @@ git commit -m "build: add soxr, comtypes and the CUDA runtime extra; require ctr
 import json
 
 from shuper_whisper.config import (
+    VALID_COMPUTE,
     VALID_OVERLAY_POSITIONS,
     AppConfig,
     load_config,
@@ -117,6 +121,7 @@ class TestDefaults:
         assert c.input_device is None
         assert c.language == "en"
         assert c.overlay_position == "top_center"
+        assert c.compute == "auto"
 
     def test_removed_fields_are_gone(self):
         d = AppConfig().to_dict()
@@ -157,6 +162,15 @@ class TestValidate:
             c = AppConfig(overlay_position=pos)
             c.validate()
             assert c.overlay_position == pos
+
+    def test_compute_values(self):
+        for value in VALID_COMPUTE:
+            c = AppConfig(compute=value)
+            c.validate()
+            assert c.compute == value
+        c = AppConfig(compute="tpu")
+        c.validate()
+        assert c.compute == "auto"
 
 
 class TestInputDevice:
@@ -203,10 +217,11 @@ class TestSaveLoad:
         path = str(tmp_path / "config.json")
         ref = {"name": "Mic", "hostapi": "MME"}
         save_config(AppConfig(hotkey="f9", model_size="small", input_device=ref,
-                              language="de", overlay_position="center"), path)
+                              language="de", overlay_position="center", compute="cpu"), path)
         loaded = load_config(path)
         assert (loaded.hotkey, loaded.model_size, loaded.input_device,
-                loaded.language, loaded.overlay_position) == ("f9", "small", ref, "de", "center")
+                loaded.language, loaded.overlay_position, loaded.compute) == (
+            "f9", "small", ref, "de", "center", "cpu")
 
     def test_old_config_keys_ignored(self, tmp_path):
         path = str(tmp_path / "config.json")
@@ -233,6 +248,8 @@ Keep `_is_frozen`, `_appdata_dir`, `_project_root`, `config_dir`, `_default_conf
 
 ```python
 VALID_OVERLAY_POSITIONS = ("top_center", "center", "bottom_center")
+# "auto" uses an NVIDIA GPU when its CUDA runtime loads; "cpu" never tries.
+VALID_COMPUTE = ("auto", "cpu")
 
 
 def _validate_device(value: object) -> object:
@@ -258,12 +275,13 @@ def _validate_device(value: object) -> object:
 @dataclass
 class AppConfig:
     hotkey: str = "ctrl+shift+space"
-    # "auto" picks large-v3-turbo on a CUDA GPU and base on CPU (transcriber.py).
+    # "auto" picks large-v3-turbo on a CUDA GPU and small on CPU (transcriber.py).
     model_size: str = "auto"
     # {"name": str, "hostapi": str | None}, a legacy int index, or None for default.
     input_device: object = None
     language: str = "en"
     overlay_position: str = "top_center"
+    compute: str = "auto"
 
     VALID_MODELS = ("auto", "tiny", "base", "small", "medium", "large-v3-turbo", "large-v3")
 
@@ -276,13 +294,15 @@ class AppConfig:
             self.language = "en"
         if self.overlay_position not in VALID_OVERLAY_POSITIONS:
             self.overlay_position = "top_center"
+        if self.compute not in VALID_COMPUTE:
+            self.compute = "auto"
         self.input_device = _validate_device(self.input_device)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-_CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "overlay_position"]
+_CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "overlay_position", "compute"]
 
 
 def load_config(path: str | None = None) -> AppConfig:
@@ -1278,9 +1298,10 @@ git commit -m "fix(audio): open devices at native rate and resample, so WASAPI-o
 - Test: `tests/test_transcriber.py` (new)
 
 **Interfaces:**
-- Produces: `select_compute() -> tuple[str, str]`, either `("cuda", "float16")` or `("cpu", "int8")`.
+- Produces: `select_compute(preference: str = "auto") -> tuple[str, str]`, either `("cuda", "float16")` or `("cpu", "int8")`. `preference="cpu"` never touches CUDA.
+- Produces: `runtime_dir() -> str`, the GPU runtime folder: `<exe dir>\cuda` when frozen, `%LOCALAPPDATA%\ShuperWhisper\cuda` from source. Stage 3's downloader fills it.
 - Produces: `resolve_model_size(model_size: str, device: str) -> str`
-- Produces: `Transcriber(model_size="auto", language="en", device=None, compute_type=None)`. It has `.load_model()`, `.transcribe(audio, initial_prompt=None, hotwords=None) -> str`, `.device`, `.model_size` (resolved after load), `.loaded` and `.language` (settable).
+- Produces: `Transcriber(model_size="auto", language="en", compute="auto", device=None, compute_type=None)`. It has `.load_model()`, `.transcribe(audio, initial_prompt=None, hotwords=None) -> str`, `.device`, `.model_size` (resolved after load), `.loaded` and `.language` (settable).
 
 - [ ] **Step 1: Write `tests/test_transcriber.py`**
 
@@ -1328,8 +1349,37 @@ def test_vad_and_language_passed():
 
 def test_auto_model_size():
     assert tr.resolve_model_size("auto", "cuda") == "large-v3-turbo"
-    assert tr.resolve_model_size("auto", "cpu") == "base"
-    assert tr.resolve_model_size("small", "cuda") == "small"
+    assert tr.resolve_model_size("auto", "cpu") == "small"
+    assert tr.resolve_model_size("base", "cuda") == "base"
+
+
+def test_cpu_preference_never_probes_cuda(monkeypatch):
+    def boom():
+        raise AssertionError("probed CUDA")
+    monkeypatch.delenv("SHUPER_WHISPER_DEVICE", raising=False)
+    monkeypatch.setattr(tr, "_cuda_device_count", boom)
+    assert tr.select_compute("cpu") == ("cpu", "int8")
+
+
+def test_cuda_load_failure_falls_back_to_cpu(monkeypatch):
+    calls = []
+
+    def fake_model(source, device, compute_type):
+        calls.append((source, device))
+        if device == "cuda":
+            raise RuntimeError("no kernel image is available for execution on the device")
+        return object()
+    monkeypatch.setattr(tr, "WhisperModel", fake_model)
+    t = tr.Transcriber(model_size="auto", device="cuda", compute_type="float16")
+    t.load_model()
+    assert calls == [("large-v3-turbo", "cuda"), ("small", "cpu")]
+    assert t.device == "cpu" and t.model_size == "small"
+
+
+def test_runtime_dir_is_searched(monkeypatch, tmp_path):
+    (tmp_path / "cuda").mkdir()
+    monkeypatch.setattr(tr, "runtime_dir", lambda: str(tmp_path / "cuda"))
+    assert str(tmp_path / "cuda") in tr._nvidia_dll_dirs()
 
 
 def test_select_compute_env_override(monkeypatch):
@@ -1381,17 +1431,24 @@ def _cuda_device_count() -> int:
         return 0
 
 
+def runtime_dir() -> str:
+    """Where the GPU runtime downloader puts the CUDA DLLs."""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.dirname(sys.executable), "cuda")
+    base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~"))
+    return os.path.join(base, "ShuperWhisper", "cuda")
+
+
 def _nvidia_dll_dirs() -> list[str]:
-    """bin/ folders of the nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels."""
+    """The downloaded GPU runtime, plus the bin/ folders of the pip
+    nvidia-cublas-cu12 / nvidia-cudnn-cu12 wheels (dev installs)."""
+    dirs = [runtime_dir()] if os.path.isdir(runtime_dir()) else []
     roots = []
     try:
         import nvidia  # namespace package installed by the wheels
         roots.extend(nvidia.__path__)
     except ImportError:
         pass
-    if getattr(sys, "frozen", False):
-        roots.append(os.path.join(sys._MEIPASS, "nvidia"))
-    dirs = []
     for root in roots:
         for lib in ("cublas", "cudnn"):
             path = os.path.join(root, lib, "bin")
@@ -1417,12 +1474,13 @@ def _load_cuda_dlls() -> bool:
         return False
 
 
-def select_compute() -> tuple[str, str]:
+def select_compute(preference: str = "auto") -> tuple[str, str]:
     """("cuda", "float16") when a usable NVIDIA GPU is present, else CPU int8.
 
-    Set SHUPER_WHISPER_DEVICE=cpu to force CPU.
+    preference="cpu" (the "Use GPU when available" setting turned off) or
+    SHUPER_WHISPER_DEVICE=cpu forces CPU without probing CUDA at all.
     """
-    if os.environ.get("SHUPER_WHISPER_DEVICE", "").lower() == "cpu":
+    if preference == "cpu" or os.environ.get("SHUPER_WHISPER_DEVICE", "").lower() == "cpu":
         return ("cpu", "int8")
     if _cuda_device_count() > 0 and _load_cuda_dlls():
         return ("cuda", "float16")
@@ -1432,14 +1490,15 @@ def select_compute() -> tuple[str, str]:
 def resolve_model_size(model_size: str, device: str) -> str:
     if model_size != "auto":
         return model_size
-    return "large-v3-turbo" if device == "cuda" else "base"
+    return "large-v3-turbo" if device == "cuda" else "small"
 
 
 class Transcriber:
     """Wraps faster-whisper's WhisperModel."""
 
-    def __init__(self, model_size: str = "auto", language: str = "en",
+    def __init__(self, model_size: str = "auto", language: str = "en", compute: str = "auto",
                  device: Optional[str] = None, compute_type: Optional[str] = None):
+        self._compute_pref = compute
         self._requested_size = model_size
         self._model_size = model_size
         self._language = language
@@ -1447,13 +1506,26 @@ class Transcriber:
         self._compute_type = compute_type
         self._model: Optional[WhisperModel] = None
 
+    def _configure(self, device: str, compute_type: str) -> str:
+        """Fix device, precision and model size; return the model source."""
+        self._device, self._compute_type = device, compute_type
+        self._model_size = resolve_model_size(self._requested_size, device)
+        return _bundled_model_path(self._model_size) or self._model_size
+
     def load_model(self) -> None:
         if self._device is None:
-            self._device, self._compute_type = select_compute()
-        self._model_size = resolve_model_size(self._requested_size, self._device)
-        source = _bundled_model_path(self._model_size) or self._model_size
+            self._device, self._compute_type = select_compute(self._compute_pref)
+        source = self._configure(self._device, self._compute_type)
         print(f"Loading Whisper {self._model_size} on {self._device} ({self._compute_type})")
-        self._model = WhisperModel(source, device=self._device, compute_type=self._compute_type)
+        try:
+            self._model = WhisperModel(source, device=self._device, compute_type=self._compute_type)
+        except Exception as e:
+            if self._device != "cuda":
+                raise
+            # Too-old GPU, out of VRAM, broken driver...: CPU still works.
+            print(f"GPU model load failed ({e}); using CPU")
+            source = self._configure("cpu", "int8")
+            self._model = WhisperModel(source, device="cpu", compute_type="int8")
 
     def transcribe(self, audio: np.ndarray, initial_prompt: Optional[str] = None,
                    hotwords: Optional[str] = None) -> str:
@@ -1515,6 +1587,7 @@ t=Transcriber('tiny'); t.load_model(); s=time.time(); print(repr(t.transcribe(np
 ```
 
 Expected: `('cuda', 'float16')`, then `'' cuda <seconds>`, and the process does not crash.
+Then `python -c "from shuper_whisper.transcriber import select_compute; print(select_compute('cpu'))"` prints `('cpu', 'int8')`.
 - If the output is `cpu`, check that `nvidia-cudnn-cu12` 9.x and `nvidia-cublas-cu12` are installed and that `python -m pip show ctranslate2` reports ≥ 4.5.
 - The app still works on CPU either way.
 
@@ -2182,7 +2255,8 @@ class FakeRecorder:
 
 
 class FakeTranscriber:
-    def __init__(self, model_size="auto", language="en", fail=False):
+    def __init__(self, model_size="auto", language="en", compute="auto", fail=False):
+        self.compute = compute
         self.fail = fail
         self.loaded = False
         self.language = language
@@ -2271,6 +2345,13 @@ def test_recovers_by_picking_a_working_device(make_app):
     a.reload_config(AppConfig(input_device={"name": "Good Mic", "hostapi": None}))
     assert a.states[-1] == "idle" and a.error is None
     assert a.recorder.device_ref == {"name": "Good Mic", "hostapi": None}
+
+
+def test_cpu_only_setting_reloads_model_on_cpu(make_app):
+    a = make_app()
+    a.start()
+    a.reload_config(AppConfig(compute="cpu"))
+    assert a.transcriber.compute == "cpu" and a.states[-2:] == ["loading", "idle"]
 
 
 def test_device_change_does_not_reload_model(make_app):
@@ -2374,7 +2455,8 @@ class ShuperWhisperApp:
         self._level_timer: Optional[threading.Timer] = None
 
         self.recorder = AudioRecorder(device_ref=config.input_device)
-        self.transcriber = Transcriber(model_size=config.model_size, language=config.language)
+        self.transcriber = Transcriber(model_size=config.model_size, language=config.language,
+                                       compute=config.compute)
         self.injector = TextInjector()
         self.hotkey_manager = self._make_hotkeys(config.hotkey)
         self.dictionary = WordDictionary()
@@ -2510,10 +2592,12 @@ class ShuperWhisperApp:
         try:
             if new_config.input_device != old.input_device:
                 self.recorder = AudioRecorder(device_ref=new_config.input_device)
-            if new_config.model_size != old.model_size or not self.transcriber.loaded:
+            model_changed = (new_config.model_size, new_config.compute) != (old.model_size, old.compute)
+            if model_changed or not self.transcriber.loaded:
                 self._set_state(STATE_LOADING)
                 self.transcriber = Transcriber(model_size=new_config.model_size,
-                                               language=new_config.language)
+                                               language=new_config.language,
+                                               compute=new_config.compute)
                 self.transcriber.load_model()
             self.transcriber.language = new_config.language
             if new_config.hotkey != old.hotkey or not self.hotkey_manager.registered:
@@ -2657,6 +2741,7 @@ Replace `get_devices`, `save_config` and `get_config_options` with:
                 input_device=data.get('input_device'),
                 language=data.get('language', 'en'),
                 overlay_position=data.get('overlay_position', 'top_center'),
+                compute=data.get('compute', 'auto'),
             )
             config.validate()
             if config.input_device != load_config().input_device:
@@ -2732,6 +2817,7 @@ export interface AppConfig {
   input_device: DeviceRef | null;
   language: string;
   overlay_position: string;
+  compute: "auto" | "cpu";
 }
 
 export interface ConfigOptions {

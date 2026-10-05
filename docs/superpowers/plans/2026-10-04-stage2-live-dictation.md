@@ -4,6 +4,8 @@
 
 **Goal:** Words appear in the focused field while you speak and the still-changing tail corrects itself in place, like macOS dictation. If you click into another field mid-dictation, the first field is left alone and dictation continues in the new one.
 
+Live typing is the default with a GPU. On CPU the default is *type on stop*: one accurate pass when you press the hotkey again. The `live_typing` setting can be `auto`, `on` or `off`.
+
 **Architecture:**
 - **Streaming.** A `StreamingSession` thread re-transcribes the current utterance about every 400 ms (GPU) or 1 s (CPU).
   - LocalAgreement-2 splits each hypothesis into *stable* words and a *tentative* tail.
@@ -24,6 +26,10 @@
 - The writer never sends more backspaces than the length of its own visible tail.
 - Low-level hooks run **only while dictating**.
 - Re-decode interval: 0.4 s on GPU, 1.0 s on CPU. It stretches to 1.2× the last decode time if decodes are slower.
+- `live_typing`:
+  - `"auto"` means live on CUDA and type-on-stop on CPU.
+  - `"on"` and `"off"` force it either way.
+- `model_size: "auto"` resolves to `large-v3-turbo` on CUDA; on CPU it's `base` when live and `small` when typing on stop.
 - An utterance ends after 0.7 s of silence. Hard cap: 25 s. Auto-stop after 30 s with no speech.
 - Tests: `python -m pytest tests/ -q`, run before every commit.
 - Conventional commits ending with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
@@ -51,6 +57,8 @@ cd D:/dev/hobby/projects/shuperwhisper && git checkout main && git pull && git c
 - Produces: `clean(text, replacements=(), final=True)`. When `final=False`, a trailing comma or colon is kept, because more words follow.
 - Produces: `AudioRecorder.read_new() -> np.ndarray`, the 16 kHz audio captured since the previous call.
 - Produces: `Transcriber.transcribe_words(audio, initial_prompt=None, hotwords=None, beam_size=1) -> list[str]`
+- Produces: `resolve_model_size(model_size, device, live=False)`
+- Produces: `Transcriber(model_size, language, compute, live_typing="auto", ...)` with a `.live -> bool` property, decided in `load_model()` once the device is known.
 
 - [ ] **Step 1: Failing tests**
 
@@ -86,6 +94,22 @@ Append to `tests/test_audio.py`, inside `class TestCapture`:
 Append to `tests/test_transcriber.py`:
 
 ```python
+def test_auto_model_depends_on_live_on_cpu():
+    assert tr.resolve_model_size("auto", "cpu", live=True) == "base"
+    assert tr.resolve_model_size("auto", "cpu", live=False) == "small"
+    assert tr.resolve_model_size("auto", "cuda", live=True) == "large-v3-turbo"
+
+
+@pytest.mark.parametrize("pref,device,live", [
+    ("auto", "cuda", True), ("auto", "cpu", False), ("on", "cpu", True), ("off", "cuda", False),
+])
+def test_live_decided_from_preference_and_device(monkeypatch, pref, device, live):
+    monkeypatch.setattr(tr, "WhisperModel", lambda *a, **k: object())
+    t = tr.Transcriber(model_size="auto", live_typing=pref, device=device, compute_type="int8")
+    t.load_model()
+    assert t.live is live
+
+
 def test_transcribe_words_is_greedy_and_split():
     t = loaded([" Hello there,", " friend."])
     assert t.transcribe_words(np.zeros(16000, np.float32)) == ["Hello", "there,", "friend."]
@@ -121,7 +145,37 @@ In `audio.py`, add `self._read_pos = 0` to `__init__`. Set `self._read_pos = 0` 
         return np.concatenate(fresh) if fresh else np.zeros(0, np.float32)
 ```
 
-In `transcriber.py`, add to `Transcriber`:
+In `transcriber.py`:
+
+- Add `import pytest` to `tests/test_transcriber.py` if it isn't already imported.
+- Change `resolve_model_size` to:
+
+```python
+def resolve_model_size(model_size: str, device: str, live: bool = False) -> str:
+    if model_size != "auto":
+        return model_size
+    if device == "cuda":
+        return "large-v3-turbo"
+    return "base" if live else "small"  # live re-decodes every second; small is too slow for that
+```
+
+- In `Transcriber.__init__`, add the parameter `live_typing: str = "auto"` after `compute`, and store `self._live_pref = live_typing` and `self._live = False`.
+- In `_configure`, replace `self._model_size = resolve_model_size(self._requested_size, device)` with the lines below. `_configure` also runs on the CPU fallback path, so live mode is re-decided there too.
+
+```python
+        self._live = self._live_pref == "on" or (self._live_pref == "auto" and device == "cuda")
+        self._model_size = resolve_model_size(self._requested_size, device, self._live)
+```
+
+- Add the property:
+
+```python
+    @property
+    def live(self) -> bool:
+        return self._live
+```
+
+Then add to `Transcriber`:
 
 ```python
     def transcribe_words(self, audio: np.ndarray, initial_prompt: Optional[str] = None,
@@ -1520,6 +1574,8 @@ git commit -m "feat(indicator): small Fluent pill that follows the text caret"
 **Interfaces:**
 - Consumes: `StreamingSession`, `Hypothesis`, `LiveWriter`, `CaretIndicator`, `HotkeyManager`, `AudioRecorder.read_new`, `parse_hotkey`, and `_win32_keys.MODIFIER_VK_MAP` / `get_vk`.
 - Produces: `ShuperWhisperApp` with `.writer` and `.overlay` (a `CaretIndicator`), plus the session callbacks `_on_hypothesis`, `_auto_stop` and `_on_session_finished`.
+- Produces: `_finish_batch()` for type-on-stop.
+- Produces: config `live_typing: str = "auto"`, with `VALID_LIVE_TYPING = ("auto", "on", "off")`.
 
 - [ ] **Step 1: Config — remove `overlay_position`**
 
@@ -1533,6 +1589,28 @@ In `config.py`:
 - remove the `overlay_position` field and its validation;
 - remove it from `_CONFIG_FIELDS`.
 
+Then add live typing. Test first, in `tests/test_config.py`:
+
+```python
+def test_live_typing_values():
+    from shuper_whisper.config import VALID_LIVE_TYPING
+    for value in VALID_LIVE_TYPING:
+        c = AppConfig(live_typing=value)
+        c.validate()
+        assert c.live_typing == value
+    c = AppConfig(live_typing="sometimes")
+    c.validate()
+    assert c.live_typing == "auto"
+```
+
+Then in `config.py`:
+- add `VALID_LIVE_TYPING = ("auto", "on", "off")  # auto: live on GPU, type-on-stop on CPU`;
+- add the field `live_typing: str = "auto"`;
+- add validation that resets unknown values to `"auto"`;
+- add `"live_typing"` to `_CONFIG_FIELDS`.
+
+In `bridge.save_config`, pass `live_typing=data.get('live_typing', 'auto')`. In `types.ts`, add `live_typing: "auto" | "on" | "off";` to `AppConfig`.
+
 In `bridge.py`:
 - remove `overlay_position` from `save_config`;
 - remove `overlay_positions` (and its import) from `get_config_options`.
@@ -1543,7 +1621,8 @@ In `ui/src/lib/types.ts`, remove `overlay_position` and `overlay_positions`. In 
 
 - Keep `FakeRecorder`, `FakeTranscriber` and `FakeHotkeys`.
   - Add `def read_new(self): return np.zeros(0, np.float32)` to `FakeRecorder`.
-  - Add `self.device = "cuda"` to `FakeTranscriber.__init__`.
+  - Change `FakeTranscriber.__init__`'s signature to `(self, model_size="auto", language="en", compute="auto", live_typing="auto", fail=False)`.
+  - Add `self.device = "cuda"`, `self.live = live_typing != "off"` and `self.live_typing = live_typing` to its body.
 - Replace `FakeOverlay` and the fixture, and add two fakes:
 
 ```python
@@ -1614,6 +1693,7 @@ def make_app(monkeypatch, tmp_path):
         states = []
         a.set_state_callback(states.append)
         a.states = states
+        a._run_async = lambda fn, *args: fn(*args)
         return a
     return _make
 ```
@@ -1655,6 +1735,35 @@ def test_auto_stop_resets_hotkey_and_finishes(make_app):
     assert a.hotkey_manager.resets >= 1 and a.states[-1] == "idle"
 
 
+def test_type_on_stop_writes_once(make_app):
+    a = make_app()
+    a.start()
+    a.transcriber.live = False
+    a.transcriber.text = "hello  world — again"
+    a._on_record_start()
+    assert a._session is None and a.states[-1] == "recording"
+    a._on_record_stop()
+    assert a.writer.updates == [("hello  world — again", "", True)]  # LiveWriter cleans it
+    assert a.states[-1] == "idle" and not a._session_lock.locked()
+
+
+def test_type_on_stop_silence_writes_nothing(make_app):
+    a = make_app()
+    a.start()
+    a.transcriber.live = False
+    a.recorder.audio = np.zeros(16000, np.float32)
+    a._on_record_start()
+    a._on_record_stop()
+    assert a.writer.updates == [] and a.states[-1] == "idle"
+
+
+def test_live_typing_change_reloads_model(make_app):
+    a = make_app()
+    a.start()
+    a.reload_config(AppConfig(live_typing="off"))
+    assert a.transcriber.live_typing == "off"
+
+
 def test_cpu_uses_slower_interval(make_app):
     a = make_app()
     a.start()
@@ -1680,12 +1789,14 @@ from .overlay import CaretIndicator
 from .streaming import Hypothesis, StreamingSession
 ```
 
-Delete `SILENCE_RMS_THRESHOLD`.
+Keep `SILENCE_RMS_THRESHOLD`; the type-on-stop path still uses it.
 
 In `__init__`, replace the `injector` and `overlay` lines with:
 
 ```python
         self.writer = LiveWriter(replacements=lambda: self.dictionary.get_replacements())
+        self.transcriber = Transcriber(model_size=config.model_size, language=config.language,
+                                       compute=config.compute, live_typing=config.live_typing)
         self.overlay = CaretIndicator()
         self._session: Optional[StreamingSession] = None
         self._session_error: Optional[str] = None
@@ -1718,6 +1829,8 @@ Replace the whole `# -- dictation session --` section (`_on_record_start` throug
         self._set_state(STATE_RECORDING)
         self.overlay.show()
         self._start_level_monitoring()
+        if not self.transcriber.live:
+            return  # type-on-stop: _on_record_stop runs one accurate pass
         self._session = StreamingSession(
             transcriber=self.transcriber,
             read_audio=self.recorder.read_new,
@@ -1749,6 +1862,25 @@ Replace the whole `# -- dictation session --` section (`_on_record_start` throug
         self.overlay.set_state("finishing")
         if self._session:
             self._session.stop()
+        else:
+            self._run_async(self._finish_batch)
+
+    def _finish_batch(self) -> None:
+        """Type-on-stop: one beam-5 pass with VAD over the whole recording."""
+        error = None
+        try:
+            audio = self.recorder.stop_recording()
+            if audio is not None and float(np.sqrt(np.mean(audio ** 2))) >= SILENCE_RMS_THRESHOLD:
+                text = self.transcriber.transcribe(
+                    audio,
+                    initial_prompt=self.dictionary.get_initial_prompt() or None,
+                    hotwords=self.dictionary.get_hotwords() or None,
+                )
+                if text:
+                    self._on_hypothesis(Hypothesis(text, "", True))
+        except Exception as e:
+            error = str(e)
+        self._on_session_finished(error)
 
     def _auto_stop(self) -> None:
         self.hotkey_manager.reset()
@@ -1795,7 +1927,12 @@ Replace the whole `# -- dictation session --` section (`_on_record_start` throug
             self._level_timer = None
 ```
 
-In `reload_config`, delete the `self.overlay.set_position(...)` line. In `__init__`, the overlay is now `CaretIndicator()`, which takes no arguments.
+In `reload_config`:
+- delete the `self.overlay.set_position(...)` line;
+- add `live_typing` to the reload check, so `model_changed` compares `(model_size, compute, live_typing)`;
+- pass `live_typing=new_config.live_typing` when rebuilding the `Transcriber`.
+
+In `__init__`, delete the original `self.transcriber = Transcriber(...)` line; the block above replaces it. In `__init__`, the overlay is now `CaretIndicator()`, which takes no arguments.
 
 - [ ] **Step 4: Run the whole suite**
 
@@ -1848,7 +1985,9 @@ python main.py --console
 | Admin window (e.g. elevated PowerShell) | The pill shows "Windows blocked typing…", and the app stays usable. |
 | Voicemeeter Out B1 | Works live. |
 | Clipboard | Unchanged after all of the above. |
-| `SHUPER_WHISPER_DEVICE=cpu` | Still live, with slower 1 s updates. |
+| `SHUPER_WHISPER_DEVICE=cpu` | Types on stop: nothing appears while talking, then the whole text at once (`small` model). |
+| `"live_typing": "on"` in config.json + CPU | Live with ~1 s updates (`base` model). |
+| `"live_typing": "off"` + GPU | Types on stop with `large-v3-turbo`. |
 
 - [ ] **Step 3: README**
 

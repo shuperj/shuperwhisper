@@ -23,6 +23,9 @@ Jared's complaints this addresses:
 | Formatting | **Rules only, no AI.** The Claude/anthropic dependency is removed. |
 | Look | **Native Windows 11**: follows system light/dark and accent, Mica backdrop, Segoe UI Variable, one scrolling page. Indicator is a small pill at the text caret. |
 | Hotkey | **Toggle only**: tap to start, tap to stop. |
+| GPU vs CPU | NVIDIA GPU used when present and its runtime is installed; a **"Use GPU when available"** setting forces CPU-only. Intel/AMD iGPUs and NPUs are not used (CTranslate2 is CUDA-only). |
+| Live typing | **Automatic** by default: live with a GPU, *type on stop* on CPU (more accurate `small` model, no lag). Settings has *Live typing: Automatic / On / Off*; live on CPU uses `base` (~1 s per update on a Ryzen 9 5900X, roughly 1.5–2 s on a laptop vPro i7). |
+| GPU runtime | Not bundled. The installer detects an NVIDIA GPU and offers a pre-ticked **"GPU acceleration for live typing (~1.3 GB download)"** task; Settings has a **Set up GPU acceleration** button for later. Both use the same in-app downloader. |
 
 ## Root causes found
 
@@ -140,10 +143,13 @@ the device bug, the text quality and the injection are all fixed.
 
 ### Transcriber (`transcriber.py`)
 
-- Pick `cuda`/`float16` when `ctranslate2.get_cuda_device_count() > 0`;
-  otherwise use `cpu`/`int8`.
-- Add an optional `gpu` extra with `nvidia-cublas-cu12` and `nvidia-cudnn-cu12`.
-- Default model: `large-v3-turbo` on GPU, `base` on CPU. Both stay selectable.
+- New config `compute: "auto" | "cpu"`. With `auto`, pick `cuda`/`float16`
+  when `ctranslate2.get_cuda_device_count() > 0` **and** cuBLAS 12 + cuDNN 9
+  load. Otherwise use `cpu`/`int8`.
+- The CUDA DLLs are searched for in the app's GPU runtime folder (see Stage 3)
+  and in the pip `nvidia-*` wheels (dev installs via the `gpu` extra).
+- Default model (`auto`): `large-v3-turbo` on GPU, `small` on CPU. Stage 2
+  changes CPU-live to `base`. Every model stays selectable.
 - Enable `vad_filter`.
 - Join segments by stripping each one and separating them with a single space.
 
@@ -230,6 +236,14 @@ the config changes.
 The full redesign is stage 3.
 
 ## Stage 2 — Live inline dictation (PR 2)
+
+### Live vs type-on-stop
+
+- New config `live_typing: "auto" | "on" | "off"`. `auto` means live on GPU
+  and type-on-stop on CPU.
+- **Type-on-stop** keeps the stage 1 batch path: one beam-5 pass with VAD,
+  fed to the writer as a single final hypothesis.
+- **Auto model on CPU:** `base` when live, `small` when typing on stop.
 
 ### Streaming transcriber (new `streaming.py`)
 
@@ -336,6 +350,42 @@ Sections:
 - Remove the unused `@radix-ui/react-slider`, `-switch` and `-tabs` packages,
   and `class-variance-authority`.
 
+### GPU acceleration setup
+
+**Downloader** (new `gpu_runtime.py`):
+
+- Downloads the pinned `nvidia-cublas-cu12` and `nvidia-cudnn-cu12` win_amd64
+  wheels from PyPI. Versions and SHA-256 hashes are hard-coded and match what
+  the bundled ctranslate2 was built against.
+- Shows progress and can be cancelled.
+- Verifies each hash, extracts only `nvidia/*/bin/*.dll` into the GPU
+  runtime folder, and writes `runtime.json`. Re-running it is safe.
+- **GPU runtime folder:** `<install dir>\cuda` when packaged (the installer
+  is per-user, so it is writable), or `%LOCALAPPDATA%\ShuperWhisper\cuda`
+  from source.
+
+**Driver check:** if `nvidia-smi` reports a driver older than 525.60 (the
+CUDA 12 minimum), it says "Update your NVIDIA driver" instead of downloading.
+
+**Entry points:**
+
+- `ShuperWhisper.exe --setup-gpu` opens a small progress window. The
+  installer runs it.
+- Settings → **Processing** shows the GPU status, a **Set up GPU
+  acceleration** button with progress, the *Use GPU when available* toggle and
+  the *Live typing* select.
+
+**Installer (`installer.iss`):**
+
+- A WMI query (`Win32_VideoController`) finds an NVIDIA card.
+- The `gpu` task is shown and pre-ticked only when one is present.
+- `[Run]` calls `--setup-gpu` for that task.
+- `[UninstallDelete]` removes `{app}\cuda`.
+
+**Build:** `packaging/build.py` no longer bundles any CUDA DLLs.
+
+**Version:** bumped to 2.0.0.
+
 ## Testing
 
 **Unit tests (pytest, every stage):**
@@ -366,8 +416,10 @@ Sections:
 ## Out of scope / known gaps
 
 - `compiler.toml`, the `python_compiler` build config, is gitignored and not
-  present on this machine. Recreating it is part of the stage 3 packaging pass,
-  as is bundling the CUDA wheels, which adds roughly 1 GB.
+  present on this machine. Stage 3 replaces it with a checked-in
+  `packaging/build.py`.
+- Intel/AMD integrated GPU or NPU acceleration (e.g. an OpenVINO backend).
+  It's possible later, but it would mean a second inference engine.
 - No TSF/IME composition-string integration. That would need a registered
   in-process text service, which is out of proportion for this app.
 - macOS / Linux.
