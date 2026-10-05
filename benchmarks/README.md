@@ -10,7 +10,8 @@ python benchmarks/bench.py                                  # all models, all cl
 python benchmarks/bench.py --device cpu --models base.en small.en
 python benchmarks/bench.py --models large-v3-turbo --compute float16
 python benchmarks/bench.py --models large-v3-turbo --set synthetic --clips pause --tune JOIN_GAP=0.4
-python benchmarks/record.py                                 # add your own voice
+python benchmarks/record.py                                 # add your own voice (~4 min)
+python benchmarks/bench.py --set own                        # score every model on it
 ```
 
 Each model runs in its own process. Results go to `benchmarks/results/<run>.md`
@@ -67,5 +68,6 @@ To rebuild it: `scp benchmarks/extract_real.py` to the CT, run
 `python3 extract_real.py ~/apps/asr-shootout/corpus /tmp/sw_real`, and copy
 `/tmp/sw_real` back as `benchmarks/.audio/real`.
 
-**Your voice** (`record.py`): reads the nine synthetic sentences through the microphone
-ShuperWhisper uses into `.audio/own/`; scored as the "Your voice" column.
+**Your voice** (`record.py`): you read `own_script.py` (27 everyday passages, about 750
+words, roughly four minutes) through the microphone ShuperWhisper uses, into
+`.audio/own/`. `bench.py --set own` scores just those; they're the "Your voice" column.
