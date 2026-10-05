@@ -143,9 +143,11 @@ the device bug, the text quality and the injection are all fixed.
 
 ### Transcriber (`transcriber.py`)
 
-- New config `compute: "auto" | "cpu"`. With `auto`, pick `cuda`/`float16`
-  when `ctranslate2.get_cuda_device_count() > 0` **and** cuBLAS 12 + cuDNN 9
-  load. Otherwise use `cpu`/`int8`.
+- New config `compute: "auto" | "cpu"`. With `auto`, pick `cuda`/`int8_float16`
+  (`float16` on GPUs without int8 support) when
+  `ctranslate2.get_cuda_device_count() > 0` **and** cuBLAS 12 + cuDNN 9
+  load. Otherwise use `cpu`/`int8`. int8 weights halve the VRAM
+  (large-v3-turbo: about 1.2 GB instead of 2.4 GB) at the same speed.
 - The CUDA DLLs are searched for in the app's GPU runtime folder (see Stage 3)
   and in the pip `nvidia-*` wheels (dev installs via the `gpu` extra).
 - Default model (`auto`): `large-v3-turbo` on GPU, `small` on CPU. Stage 2

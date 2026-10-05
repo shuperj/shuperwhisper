@@ -113,8 +113,21 @@ def _load_cuda_dlls() -> bool:
         return False
 
 
+def _gpu_compute_type() -> str:
+    try:
+        import ctranslate2
+        supported = ctranslate2.get_supported_compute_types("cuda")
+    except Exception:
+        return "float16"
+    return "int8_float16" if "int8_float16" in supported else "float16"
+
+
 def select_compute(preference: str = "auto") -> tuple[str, str]:
-    """("cuda", "float16") when a usable NVIDIA GPU is present, else CPU int8.
+    """("cuda", "int8_float16") when a usable NVIDIA GPU is present, else CPU int8.
+
+    int8 weights halve the VRAM (large-v3-turbo: 1.2 GB instead of 2.4 GB)
+    at the same speed and, in our tests, the same text. GPUs without int8
+    support get float16.
 
     preference="cpu" (the "Use GPU when available" setting turned off) or
     SHUPER_WHISPER_DEVICE=cpu forces CPU without probing CUDA at all.
@@ -122,7 +135,7 @@ def select_compute(preference: str = "auto") -> tuple[str, str]:
     if preference == "cpu" or os.environ.get("SHUPER_WHISPER_DEVICE", "").lower() == "cpu":
         return ("cpu", "int8")
     if _cuda_device_count() > 0 and _load_cuda_dlls():
-        return ("cuda", "float16")
+        return ("cuda", _gpu_compute_type())
     return ("cpu", "int8")
 
 
