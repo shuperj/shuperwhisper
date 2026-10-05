@@ -23,10 +23,20 @@ def caret_rect(use_uia: bool = False):
         rc = info.rcCaret
         top_left = wt.POINT(rc.left, rc.top)
         bottom_right = wt.POINT(rc.right, rc.bottom)
-        user32.ClientToScreen(info.hwndCaret, ctypes.byref(top_left))
-        user32.ClientToScreen(info.hwndCaret, ctypes.byref(bottom_right))
+        for point in (top_left, bottom_right):
+            user32.ClientToScreen(info.hwndCaret, ctypes.byref(point))
+            # A DPI-unaware app reports logical pixels; we work in physical.
+            # (No-op for DPI-aware windows.)
+            _to_physical(info.hwndCaret, point)
         return (top_left.x, top_left.y, max(bottom_right.x, top_left.x + 1), bottom_right.y)
     return uia.caret_bounds() if use_uia else None
+
+
+def _to_physical(hwnd, point) -> None:
+    try:
+        user32.LogicalToPhysicalPointForPerMonitorDPI(hwnd, ctypes.byref(point))
+    except AttributeError:  # before Windows 8.1
+        pass
 
 
 def foreground_rect():

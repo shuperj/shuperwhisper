@@ -2,13 +2,17 @@
 
 Low-level hooks are installed only for the length of a dictation session.
 Events we injected ourselves (SendInput) carry the INJECTED flag and are
-ignored, as are the hotkey's own keys.
+ignored, as are the hotkey's modifiers, and its trigger key while they're
+held. ``healthy`` is False if the hooks couldn't be installed; the writer
+then won't revise text it can't verify.
 """
 
 import ctypes
 import ctypes.wintypes as wt
 import threading
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional
+
+from ._win32_keys import is_key_down
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -49,9 +53,13 @@ kernel32.GetModuleHandleW.restype = wt.HMODULE
 
 
 class InputMonitor:
-    def __init__(self, ignore_vks: Iterable[int] = ()):
-        self._ignore = frozenset(ignore_vks)
+    def __init__(self, ignore_vks: Iterable[int] = (), trigger_vk: int = 0,
+                 key_down: Callable[[int], bool] = is_key_down):
+        self._ignore = frozenset(ignore_vks)    # the hotkey's modifiers
+        self._trigger = trigger_vk               # its trigger: ignored only mid-chord
+        self._key_down = key_down
         self._user_input = False
+        self._healthy = False
         self._thread: Optional[threading.Thread] = None
         self._thread_id = 0
         self._ready = threading.Event()
@@ -62,8 +70,11 @@ class InputMonitor:
     # Pure handlers (unit-tested) ------------------------------------------------
 
     def _on_key(self, vk: int, flags: int) -> None:
-        if not flags & LLKHF_INJECTED and vk not in self._ignore:
-            self._user_input = True
+        if flags & LLKHF_INJECTED or vk in self._ignore:
+            return
+        if vk == self._trigger and (not self._ignore or any(self._key_down(m) for m in self._ignore)):
+            return  # the hotkey itself (a plain Space while typing still counts)
+        self._user_input = True
 
     def _on_mouse(self, message: int, flags: int) -> None:
         if message in _CLICKS and not flags & LLMHF_INJECTED:
@@ -88,6 +99,9 @@ class InputMonitor:
         module = kernel32.GetModuleHandleW(None)
         kb = user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._kb_proc, module, 0)
         mouse = user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_proc, module, 0)
+        self._healthy = bool(kb and mouse)
+        if not self._healthy:
+            print(f"[input] couldn't install input hooks (error {ctypes.get_last_error()})", flush=True)
         self._ready.set()
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
@@ -108,9 +122,12 @@ class InputMonitor:
     def stop(self) -> None:
         if not self._thread:
             return
-        user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        if self._thread_id:
+            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
         self._thread.join(1.0)
         self._thread = None
+        self._thread_id = 0
+        self._healthy = False
 
     def clear(self) -> None:
         self._user_input = False
@@ -118,3 +135,7 @@ class InputMonitor:
     @property
     def user_input(self) -> bool:
         return self._user_input
+
+    @property
+    def healthy(self) -> bool:
+        return self._healthy

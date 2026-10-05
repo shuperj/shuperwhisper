@@ -188,16 +188,26 @@ def _caret_bounds_of(element):
     selection = pattern.QueryInterface(mod.IUIAutomationTextPattern).GetSelection()
     if not selection or selection.Length == 0:
         return None
-    rng = selection.GetElement(0).Clone()
-    # A collapsed range usually has no rectangle; measure the character before it.
-    rng.MoveEndpointByRange(mod.TextPatternRangeEndpoint_End, rng, mod.TextPatternRangeEndpoint_Start)
-    rng.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_Start, mod.TextUnit_Character, -1)
-    rects = list(rng.GetBoundingRectangles() or ())
+    caret = selection.GetElement(0).Clone()
+    caret.MoveEndpointByRange(mod.TextPatternRangeEndpoint_End, caret, mod.TextPatternRangeEndpoint_Start)
+    # A collapsed range usually has no rectangle; measure the character before
+    # the caret -- unless that's a line break (the caret is at the start of a
+    # new line), then the character after it.
+    before = caret.Clone()
+    before.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_Start, mod.TextUnit_Character, -1)
+    if before.GetText(1) not in ("\r", "\n", "\v", ""):
+        rects = list(before.GetBoundingRectangles() or ())
+        if len(rects) >= 4:
+            left, top, width, height = rects[-4:]
+            right = int(left + width)
+            return (right, int(top), right + 1, int(top + height))
+    after = caret.Clone()
+    after.MoveEndpointByUnit(mod.TextPatternRangeEndpoint_End, mod.TextUnit_Character, 1)
+    rects = list(after.GetBoundingRectangles() or ())
     if len(rects) < 4:
         return None
-    left, top, width, height = rects[-4:]
-    right = int(left + width)
-    return (right, int(top), right + 1, int(top + height))
+    left, top, _width, height = rects[:4]
+    return (int(left), int(top), int(left) + 1, int(top + height))
 
 
 def _caret_bounds():

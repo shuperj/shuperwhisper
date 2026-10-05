@@ -8,6 +8,7 @@ Utterances are bounded by Silero VAD: after END_SILENCE of quiet, everything
 is committed and the buffer restarts, so each decode stays short.
 """
 
+import difflib
 import re
 import threading
 import time
@@ -31,45 +32,85 @@ def _norm(word: str) -> str:
 
 
 class LocalAgreement:
+    # Share of the committed characters a re-worded hypothesis must still
+    # contain before we trust it to tell us where the new words start.
+    MIN_OVERLAP = 0.6
+
     def __init__(self):
         self.reset()
 
     def reset(self) -> None:
         self._prev: list[str] = []
-        self._stable = 0
-        self._stable_norm: list[str] = []
+        self._stable_words: list[str] = []
 
-    def _aligned(self, words: list[str]) -> bool:
-        """Does ``words`` still start with what we've already committed?"""
-        n = self._stable
-        return len(words) >= n and [_norm(w) for w in words[:n]] == self._stable_norm
+    @property
+    def stable_count(self) -> int:
+        return len(self._stable_words)
+
+    def _rebase(self, words: list[str]) -> Optional[list[str]]:
+        """Re-express ``words`` as <committed words> + <what follows them>.
+
+        Whisper re-decodes the whole utterance each pass and may re-word what
+        we already committed ("all right" -> "alright", "10" -> "ten"). Match
+        the committed text against the hypothesis character by character to
+        find where the new words start. None if the hypothesis doesn't
+        contain the committed text at all (then it's ignored).
+        """
+        n = len(self._stable_words)
+        if n == 0:
+            return list(words)
+        normed = [_norm(w) for w in words]
+        committed = [_norm(w) for w in self._stable_words]
+        if normed[:n] == committed:
+            return self._stable_words + list(words[n:])
+        a, b = "".join(committed), "".join(normed)
+        if not a:
+            return self._stable_words + list(words[n:])
+        matcher = difflib.SequenceMatcher(None, a, b, autojunk=False)
+        blocks = [m for m in matcher.get_matching_blocks() if m.size]
+        if not blocks or sum(m.size for m in blocks) < self.MIN_OVERLAP * len(a):
+            return None
+        last = blocks[-1]
+        end_b = last.b + last.size + (len(a) - (last.a + last.size))
+        total = 0
+        for i, w in enumerate(normed):
+            total += len(w)
+            if total >= end_b:
+                return self._stable_words + list(words[i + 1:])
+        return list(self._stable_words)
 
     def update(self, words: list[str]) -> tuple[list[str], list[str]]:
         """Returns (newly stable words, tentative words).
 
-        A hypothesis that contradicts committed words (Whisper sometimes drops
-        or rewrites the start of a short buffer) is ignored, not trusted.
+        A hypothesis that doesn't contain the committed words (Whisper
+        sometimes drops the start of a short buffer) is ignored, not trusted.
         """
-        if not self._aligned(words):
-            return [], self._prev[self._stable:]
+        n = len(self._stable_words)
+        rebased = self._rebase(words) if words else None
+        if rebased is None:
+            return [], self._prev[n:]
         agree = 0
-        for a, b in zip(self._prev, words):
+        for a, b in zip(self._prev, rebased):
             if _norm(a) != _norm(b):
                 break
             agree += 1
-        self._prev = words
+        self._prev = rebased
         newly: list[str] = []
-        if agree > self._stable:
-            newly = words[self._stable:agree]
-            self._stable = agree
-            self._stable_norm = [_norm(w) for w in words[:agree]]
-        return newly, words[self._stable:]
+        if agree > n:
+            newly = rebased[n:agree]
+            self._stable_words = rebased[:agree]
+        return newly, rebased[len(self._stable_words):]
 
     def flush(self, words: Optional[list[str]] = None) -> list[str]:
-        """End of utterance: everything not yet stable becomes stable."""
-        if words is None or not self._aligned(words):
-            words = self._prev
-        rest = words[self._stable:]
+        """End of utterance: everything not yet stable becomes stable.
+
+        An empty or contradicting final pass carries no information; the last
+        good hypothesis is used instead.
+        """
+        rebased = self._rebase(words) if words else None
+        if rebased is None:
+            rebased = self._prev
+        rest = rebased[len(self._stable_words):]
         self.reset()
         return rest
 
@@ -85,6 +126,7 @@ class StreamingSession:
     MAX_UTTERANCE = 25.0
     AUTO_STOP = 30.0
     PROMPT_CHARS = 200
+    CAP_KEEP = 1.0  # at the cap, the last second is carried into the next utterance
 
     def __init__(self, transcriber, read_audio: Callable[[], np.ndarray],
                  on_hypothesis: Callable[[Hypothesis], None],
@@ -138,13 +180,13 @@ class StreamingSession:
         parts = [self._prompt_fn() or "", self._committed.strip()[-self.PROMPT_CHARS:]]
         return " ".join(p for p in parts if p) or None
 
-    def _decode(self, beam_size: int = 1) -> list[str]:
+    def _decode(self, beam_size: int = 1, timestamps: bool = False):
         started = self._clock()
-        words = self._transcriber.transcribe_words(
+        result = self._transcriber.transcribe_words(
             self._buffer, initial_prompt=self._prompt(), hotwords=self._hotwords,
-            beam_size=beam_size)
+            beam_size=beam_size, timestamps=timestamps)
         self._interval = max(self._base_interval, (self._clock() - started) * 1.2)
-        return words
+        return result
 
     def _emit(self, newly: list[str], tentative: list[str], final: bool = False) -> None:
         stable_text, tentative_text = " ".join(newly), " ".join(tentative)
@@ -164,12 +206,29 @@ class StreamingSession:
             self._buffer = np.concatenate([self._buffer, chunk])
         return self._speech_spans(self._buffer) if len(self._buffer) else []
 
+    def _cut_at_cap(self) -> None:
+        """A long stretch without a pause: commit up to a word boundary about a
+        second from the end and carry the rest of the audio over, so no word
+        is split between utterances."""
+        timed = self._decode(timestamps=True)
+        words = [w for w, _end in timed]
+        limit = len(self._buffer) / SAMPLE_RATE - self.CAP_KEEP
+        keep = sum(1 for _w, end in timed if end <= limit)
+        keep = min(max(keep, self._agreement.stable_count), len(timed))
+        self._emit(self._agreement.flush(words[:keep]), [], final=True)
+        cut = timed[keep - 1][1] if keep else limit
+        self._buffer = self._buffer[max(0, int(cut * SAMPLE_RATE)):]
+
     def _tick(self) -> None:
         spans = self._append_audio()
         if self._stop.is_set():
             return  # the final pass in _run() decodes what's left
         now = self._clock()
         if not spans:
+            if self._agreement.stable_count or self._last_tentative:
+                # Speech vanished (VAD dropout or it was noise): close the
+                # utterance so stale agreement can't swallow the next one.
+                self._emit(self._agreement.flush(), [], final=True)
             if len(self._buffer) > 2 * SAMPLE_RATE:
                 self._buffer = self._buffer[-SAMPLE_RATE // 2:]
             if not self._auto_stopped and now - self._last_speech >= self.AUTO_STOP:
@@ -179,11 +238,13 @@ class StreamingSession:
         speech_end = spans[-1][1]
         silence_after = (len(self._buffer) - speech_end) / SAMPLE_RATE
         self._last_speech = now - silence_after
+        if len(self._buffer) >= self.MAX_UTTERANCE * SAMPLE_RATE and silence_after < self.END_SILENCE:
+            self._cut_at_cap()
+            return
         words = self._decode()
-        too_long = len(self._buffer) >= self.MAX_UTTERANCE * SAMPLE_RATE
-        if silence_after >= self.END_SILENCE or too_long:
+        if silence_after >= self.END_SILENCE:
             self._emit(self._agreement.flush(words), [], final=True)
-            self._buffer = self._buffer[len(self._buffer) if too_long else speech_end:]
+            self._buffer = self._buffer[speech_end:]
         else:
             newly, tentative = self._agreement.update(words)
             self._emit(newly, tentative)

@@ -73,11 +73,13 @@ def _apply_replacements(text: str, replacements: Iterable[tuple[str, str]]) -> s
     return text
 
 
-def _apply_commands(text: str, final: bool = True) -> str:
+def _apply_commands(text: str, final: bool = True, starts_clause: bool = True) -> str:
     # In a chunk of a longer stream (final=False) the end of the text is not
-    # a pause, so it doesn't count as the edge of a command.
+    # a pause, so it doesn't count as the edge of a command; nor is its start,
+    # unless the text before it ended a clause.
     end = r"\s*$" if final else r"(?!)"
-    edge_before = rf"(?:^|(?<=[{_PUNCT_CLASS}]))"
+    start = "^|" if starts_clause else ""
+    edge_before = rf"(?:{start}(?<=[{_PUNCT_CLASS}]))"
     for phrase, mark in _BREAK_COMMANDS:
         word = _phrase_pattern(phrase)
         pattern = (rf"(?:{edge_before}\s*{word}[{_PUNCT_CLASS}]?"
@@ -130,14 +132,16 @@ def _capitalise_after_commands(text: str) -> str:
     return text.replace(_CAP, "")
 
 
-def clean(text: str, replacements: Iterable[tuple[str, str]] = (), final: bool = True) -> str:
+def clean(text: str, replacements: Iterable[tuple[str, str]] = (), final: bool = True,
+          starts_clause: bool = True) -> str:
     """Tidy one transcription: replacements, spoken commands, fillers, dashes,
     ellipses, spacing, and capitalisation after spoken sentence ends.
 
     With ``final=False`` (a chunk of a longer stream) trailing commas are kept.
+    ``starts_clause=False`` says the chunk continues a sentence mid-clause.
     """
     text = _apply_replacements(text, replacements)
-    text = _apply_commands(text, final)
+    text = _apply_commands(text, final, starts_clause)
     text = _FILLER_RE.sub(_drop_filler, text)
     text = _DASH_RE.sub(", ", text)
     text = _TRAILING_ELLIPSIS_RE.sub("", text)

@@ -72,6 +72,15 @@ class CaretIndicator:
         self._hwnd = None
         self._visible = False
         self._width = self.WIDTH
+        # Bumped by every show/hide: a delayed hide only acts if nothing has
+        # happened since it was scheduled.
+        self._generation = 0
+        self._gen_lock = threading.Lock()
+
+    def _bump(self) -> int:
+        with self._gen_lock:
+            self._generation += 1
+            return self._generation
 
     # -- window plumbing -----------------------------------------------------------
 
@@ -79,16 +88,21 @@ class CaretIndicator:
         self._window = window
 
     def apply_win32_styles(self) -> None:
-        """Never activate, never appear in Alt+Tab."""
+        """Never activate, never appear in Alt+Tab, never catch clicks, and
+        start hidden (pywebview shows transparent windows once on load)."""
         user32 = ctypes.windll.user32
         hwnd = user32.FindWindowW(None, "ShuperWhisper Indicator")
         if not hwnd:
             print("WARNING: indicator window not found")
             return
         self._hwnd = hwnd
-        GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = -20, 0x08000000, 0x00000080
+        GWL_EXSTYLE = -20
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT = 0x08000000, 0x00000080, 0x00000020
         style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                              style | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT)
+        if not self._visible:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE
 
     def _eval(self, js: str) -> None:
         if self._window:
@@ -146,6 +160,7 @@ class CaretIndicator:
     # -- public API ----------------------------------------------------------------
 
     def show(self) -> None:
+        self._bump()
         self._visible = True
         self._width = self.WIDTH
         self._eval("show()")
@@ -157,6 +172,7 @@ class CaretIndicator:
         self._eval(f"setState('{state}')")
 
     def show_error(self, message: str) -> None:
+        generation = self._bump()
         self._visible = True
         self._width = self.ERROR_WIDTH
         self._eval(f"showError({json.dumps(message)})")
@@ -166,16 +182,18 @@ class CaretIndicator:
 
         def _later():
             time.sleep(self.ERROR_SECONDS)
-            self.hide()
+            if self._generation == generation:  # nothing newer is showing
+                self.hide()
         threading.Thread(target=_later, daemon=True).start()
 
     def hide(self) -> None:
+        generation = self._bump()
         self._visible = False
         self._eval("hide()")
         if self._hwnd:
             def _later():
                 time.sleep(0.15)
-                if not self._visible:
+                if self._generation == generation:
                     ctypes.windll.user32.ShowWindow(self._hwnd, 0)
             threading.Thread(target=_later, daemon=True).start()
 

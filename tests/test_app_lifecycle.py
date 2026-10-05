@@ -90,7 +90,7 @@ class FakeWriter:
         self.updates = []
         self.blocked = False
 
-    def begin(self, ignore_vks=()):
+    def begin(self, ignore_vks=(), trigger_vk=0):
         pass
 
     def update(self, stable, tentative, final=False):
@@ -291,7 +291,7 @@ def test_dead_microphone_ends_session(make_app):
     a.overlay.is_visible = True
     a._on_record_start()
     a.recorder.stream_error = "The microphone stopped sending audio"
-    a._start_level_monitoring()
+    a._start_level_monitoring(a._current)
     assert a.states[-1] == "error" and "stopped" in a.error
     assert not a.busy
 
@@ -340,3 +340,35 @@ def test_state_tracked(make_app):
     a = make_app()
     a.start()
     assert a.state == "idle"
+
+def test_late_stop_after_session_ended_is_ignored(make_app):
+    a = make_app()
+    a.start()
+    FakeSession.script = [Hypothesis("hi", "", True)]
+    a._on_record_start()
+    token = a._current
+    a._auto_stop(token)                      # session ends by itself
+    assert not a.busy and a.states[-1] == "idle"
+    a._on_record_stop()                       # the user's (late) stop press
+    a._on_record_stop(token)                  # and a stale dead-mic stop
+    assert not a.busy and a.states[-1] == "idle"
+    a._on_record_start()                      # next dictation still works
+    assert a.busy and a.states[-1] == "recording"
+
+
+def test_double_stop_releases_once(make_app):
+    a = make_app()
+    a.start()
+    a.transcriber.live = False
+    a._on_record_start()
+    a._on_record_stop()
+    a._on_record_stop()
+    assert not a.busy and a.states.count("processing") == 1
+
+
+def test_start_failure_after_mic_opened_releases_session(make_app, monkeypatch):
+    a = make_app()
+    a.start()
+    monkeypatch.setattr(a.writer, "begin", lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    a._on_record_start()
+    assert not a.busy and a.states[-1] == "error" and "boom" in a.error

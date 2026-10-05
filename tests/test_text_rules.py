@@ -197,3 +197,8 @@ class TestChunks:
 
     def test_new_line_at_chunk_end_is_words(self):
         assert clean("a new line", final=False) == "a new line"
+
+
+def test_chunk_starting_mid_clause_keeps_new_line_words():
+    assert clean("new line of products", final=False, starts_clause=False) == "new line of products"
+    assert clean("new line thanks", final=False, starts_clause=True) == "\nThanks"

@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_EXCLUDE = (nvidia, "ctranslate2.converters", "torch", "transformers", "tensorflow",
+_EXCLUDE = ("nvidia", "ctranslate2.converters", "torch", "transformers", "tensorflow",
             "numba", "llvmlite", "scipy", "pandas", "sklearn", "matplotlib", "IPython")
 
 
