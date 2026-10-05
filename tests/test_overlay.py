@@ -2,7 +2,6 @@
 
 import pytest
 
-from shuper_whisper.config import FORMAT_MODE_ORDER
 from shuper_whisper.overlay import RecordingOverlay
 
 
@@ -19,51 +18,9 @@ class TestOverlayInit:
         o = RecordingOverlay()
         assert o.is_visible is False
 
-    def test_default_format_mode(self):
-        o = RecordingOverlay()
-        assert o.format_mode == "normal"
-
     def test_default_state_is_recording(self):
         o = RecordingOverlay()
         assert o._state == "recording"
-
-
-class TestFormatModeCycling:
-    def test_cycle_down_from_normal(self):
-        o = RecordingOverlay()
-        o._format_mode = "normal"
-        result = o.cycle_format_mode(1)
-        assert result == "professional_email"
-
-    def test_cycle_up_from_normal_wraps(self):
-        o = RecordingOverlay()
-        o._format_mode = "normal"
-        result = o.cycle_format_mode(-1)
-        assert result == "ai_prompt"
-
-    def test_cycle_through_all_modes(self):
-        o = RecordingOverlay()
-        o._format_mode = "normal"
-        modes = []
-        for _ in range(len(FORMAT_MODE_ORDER)):
-            mode = o.cycle_format_mode(1)
-            modes.append(mode)
-        # Should have cycled back to start
-        assert modes[-1] == "normal"
-        assert len(set(modes)) == len(FORMAT_MODE_ORDER)
-
-    def test_cycle_calls_callback(self):
-        called_with = []
-        o = RecordingOverlay()
-        o.set_on_format_change(lambda m: called_with.append(m))
-        o._format_mode = "normal"
-        o.cycle_format_mode(1)
-        assert called_with == ["professional_email"]
-
-    def test_format_mode_property(self):
-        o = RecordingOverlay()
-        o._format_mode = "ai_prompt"
-        assert o.format_mode == "ai_prompt"
 
 
 class TestOverlayPosition:

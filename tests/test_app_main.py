@@ -27,7 +27,6 @@ def stub_main(mocker):
     """Neutralise everything main() touches, recording the call order."""
     calls = []
     mocker.patch.object(app, "_enable_dpi_awareness", side_effect=lambda: calls.append("dpi"))
-    mocker.patch.object(app, "_load_env", side_effect=lambda: calls.append("env"))
     cfg = mocker.Mock(hotkey="ctrl+alt", model_size="base")
 
     def _load_config():
@@ -39,18 +38,14 @@ def stub_main(mocker):
     return calls
 
 
-def test_main_enables_dpi_and_loads_env_before_config(mocker, stub_main):
-    """DPI awareness and .env must both run, and before config/UI work.
-
-    _load_env() is what supplies ANTHROPIC_API_KEY, so if it is skipped the
-    Claude-reformatting feature silently falls back to templates.
-    """
+def test_main_enables_dpi_before_config(mocker, stub_main):
+    """DPI awareness must run before any config/UI work."""
     tray = mocker.patch("shuper_whisper.tray.TrayController")
     mocker.patch.object(sys, "argv", ["shuper-whisper"])
 
     app.main()
 
-    assert stub_main[:3] == ["dpi", "env", "config"]
+    assert stub_main[:2] == ["dpi", "config"]
     tray.return_value.run.assert_called_once()
 
 
