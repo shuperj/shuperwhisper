@@ -3,7 +3,7 @@ import { Cpu, Type, Zap } from "lucide-react";
 import type { AppConfig, GpuSetupProgress, GpuStatus } from "@/lib/types";
 import type { FieldErrors } from "@/hooks/useSettings";
 import { cancelGpuSetup, getGpuSetupProgress, getGpuStatus, setupGpu } from "@/lib/bridge";
-import { Button, Card, ProgressBar, Select, Toggle } from "./fluent";
+import { Button, Card, ProgressBar, Select } from "./fluent";
 
 const FINISHED = ["done", "error", "cancelled"];
 
@@ -77,7 +77,7 @@ export function ProcessingSection({
   if (!gpu) description = "Checking…";
   else if (!gpu.gpu) description = "No NVIDIA graphics card found. Dictation runs on the processor.";
   else if (gpu.active) description = `${gpu.gpu}: in use`;
-  else if (gpu.installed && config.compute === "cpu") description = `${gpu.gpu}: set up, but turned off below`;
+  else if (gpu.installed && config.compute === "cpu") description = `${gpu.gpu}: set up, but "Processor only" is chosen below`;
   else if (gpu.installed && (modelState === "loading" || running)) description = `${gpu.gpu}: starting…`;
   else if (gpu.installed)
     description = `${gpu.gpu}: set up, but it couldn't start, so the processor is used. Updating the NVIDIA driver may help.`;
@@ -113,15 +113,18 @@ export function ProcessingSection({
       </Card>
       <Card
         icon={Cpu}
-        title="Use GPU when available"
-        description="Turn off to always use the processor."
+        title="Run speech recognition on"
+        description="The graphics card is faster and types as you speak. The processor works on any computer."
         error={errors.compute}
       >
-        <Toggle
-          label="Use GPU when available"
-          checked={config.compute === "auto"}
+        <Select
+          value={config.compute}
           disabled={modelState === "loading"}
-          onChange={(on) => apply({ compute: on ? "auto" : "cpu" })}
+          onChange={(v) => apply({ compute: v as AppConfig["compute"] })}
+          options={[
+            { value: "auto", label: "Graphics card when available" },
+            { value: "cpu", label: "Processor only" },
+          ]}
         />
       </Card>
       <Card

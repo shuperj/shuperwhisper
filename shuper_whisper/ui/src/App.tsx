@@ -9,14 +9,13 @@ import { MicrophoneCard } from "@/components/MicrophoneCard";
 import { ProcessingSection } from "@/components/ProcessingSection";
 import { DictionarySection } from "@/components/DictionarySection";
 
+// Memory and accuracy from benchmarks/results/*-full.md (live typing, real speech).
 const MODEL_LABELS: Record<string, string> = {
   auto: "Automatic (recommended)",
-  tiny: "Tiny (fastest)",
-  base: "Base",
-  small: "Small",
-  medium: "Medium",
-  "large-v3-turbo": "Large v3 Turbo",
-  "large-v3": "Large v3 (most accurate)",
+  "large-v3-turbo": "Large v3 Turbo: most accurate, about 1.5 GB",
+  small: "Small: about 1 GB, twice the mistakes",
+  base: "Base: about 0.6 GB, three times the mistakes",
+  tiny: "Tiny: about 0.4 GB, least accurate",
 };
 
 export default function App() {
@@ -47,7 +46,9 @@ export default function App() {
   }
 
   const busy = status.state === "loading";
-  const modelDescription = busy ? "Loading the speech model…" : (system?.compute ?? "");
+  const modelDescription = busy
+    ? "Loading the speech model…"
+    : `${system?.compute ?? ""}. Smaller models use less memory but get more words wrong.`;
 
   return (
     <div className="h-full overflow-y-auto">
