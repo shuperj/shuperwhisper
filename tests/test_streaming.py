@@ -323,3 +323,47 @@ def test_final_reread_can_add_a_missing_full_stop():
     la.commit_all("it seems to work".split())
     la.seed(["to", "work"])
     assert la.flush(["to", "work"]) == []
+
+
+def test_noise_without_words_does_not_pile_up_in_the_buffer():
+    # A click that VAD takes for speech, then silence: Whisper finds no words.
+    # Kept, that audio grew forever and Whisper invented speech to fill it.
+    clock = Clock()
+    s = StreamingSession(transcriber=FakeTranscriber([]),
+                         read_audio=lambda: np.full(int(0.4 * SR), 0.01, np.float32),
+                         on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None, interval=0.0,
+                         speech_spans=lambda a: [(0, 1600)] if len(a) > 1600 else [], clock=clock)
+    for _ in range(50):                                   # 20 s
+        clock.t += 0.4
+        s._tick()
+    assert len(s._buffer) < 3 * SR
+
+
+def test_new_speech_survives_carried_words_that_were_misheard():
+    ticks = [
+        (0.4, [(0, 6400)]),
+        (1.2, [(0, 6400)]),                       # pause: closes "send me a message?"
+        (0.4, [(0, 6400), (32000, 38400)]),       # new speech
+        (0.4, [(0, 6400), (32000, 44800)]),
+        (0.4, [(0, 6400), (32000, 51200)]),
+    ]
+    decodes = [["send", "me", "a", "message?"], ["send", "me", "a", "message?"],
+               ["Hey,", "I", "am"],                          # no carried words: a miss
+               ["Hey,", "I", "am", "just"],                  # second miss: drop the carry
+               ["Hey,", "I", "am", "just"],                  # re-decode of the new speech alone
+               ["Hey,", "I", "am", "just", "testing"],
+               ["Hey,", "I", "am", "just", "testing."]]
+    _s, hyps, _f, _a = run(ticks, decodes)
+    typed = " ".join(h.stable_delta for h in hyps)
+    assert "Hey, I am just testing" in typed
+    assert typed.count("message") == 1
+
+
+def test_prompt_keeps_sentence_marks_committed_on_their_own():
+    s = StreamingSession(transcriber=FakeTranscriber([]), read_audio=lambda: np.zeros(0, np.float32),
+                         on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None)
+    s._emit(["the", "report"], ["."])
+    s._emit([".", "Can", "you"], [])
+    assert s._prompt() == "the report. Can you"

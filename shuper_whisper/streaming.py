@@ -121,6 +121,10 @@ class LocalAgreement:
                 return self._stable_words[:-1] + [last] + list(words[i + 1:])
         return list(self._stable_words)
 
+    def fits(self, words: list[str]) -> bool:
+        """Does this hypothesis contain the committed words?"""
+        return self._rebase(words) is not None
+
     @property
     def held(self) -> bool:
         return self._held
@@ -260,7 +264,8 @@ class StreamingSession:
         self._agreement = LocalAgreement()
         self._buffer = np.zeros(0, np.float32)
         self._committed: list[str] = []  # every committed word, for the prompt
-        self._carried = 0      # how many of those are still in the buffer's audio
+        self._carried = 0      # how many of those are carried in the buffer's audio
+        self._carry_misses = 0
         self._carry_end = 0    # buffer sample where the carried words end
         self._gap_closed = True  # the pause after the carried words was shortened
         self._last_tentative = ""
@@ -304,7 +309,13 @@ class StreamingSession:
         if not final and not stable_text and tentative_text == self._last_tentative:
             return
         self._last_tentative = tentative_text
-        self._committed += [w for w in newly if _norm(w)]
+        for w in newly:
+            if _norm(w):
+                self._committed.append(w)
+            elif self._committed:
+                # a held mark committed on its own: it belongs to the word
+                # before, and the prompt needs it (Whisper copies its style)
+                self._committed[-1] += w
         self._on_hypothesis(Hypothesis(stable_text, tentative_text, final))
 
     def _append_audio(self) -> list:
@@ -321,6 +332,12 @@ class StreamingSession:
         newly, tentative = self._agreement.commit_all(words[:keep])
         self._emit(newly, tentative)
         if keep == 0:
+            # Whisper heard no words (VAD took a click or a breath for
+            # speech). Drop the audio: kept, it grows with every tick, and
+            # Whisper fills a long silent stretch with invented speech.
+            self._emit(self._agreement.flush(), [], final=True)
+            self._buffer = self._buffer[-int(0.3 * SAMPLE_RATE):]
+            self._carry_end = 0
             return
         end_t = timed[keep - 1][1]
         k = 1
@@ -331,10 +348,31 @@ class StreamingSession:
             k += 1
         start_t = timed[keep - k - 1][1] if keep - k - 1 >= 0 else 0.0
         self._agreement.seed(self._agreement.stable_words[-k:])
+        self._carried, self._carry_misses = k, 0
         start = max(0, int(start_t * SAMPLE_RATE))
         self._buffer = self._buffer[start:]
         self._carry_end = max(0, int(end_t * SAMPLE_RATE) - start)
         self._gap_closed = False
+
+    def _decode_new(self, beam_size: int = 1, timestamps: bool = False, patient: bool = False):
+        """Decode speech that follows carried words. If Whisper misheard them
+        the first time (say it invented an ending), no new hypothesis contains
+        them, every one looks contradictory, and the new speech would be lost:
+        then let the earlier sentence stand and decode the new speech alone.
+        ``patient`` allows one miss first (a pass sometimes drops the start)."""
+        result = self._decode(beam_size=beam_size, timestamps=timestamps)
+        words = [w for w, _end in result] if timestamps else result
+        if (not self._carry_end or not words or self._agreement.fits(words)
+                or self._agreement.stable_count != self._carried):
+            self._carry_misses = 0
+            return result
+        self._carry_misses += 1
+        if patient and self._carry_misses < 2:
+            return result
+        self._emit(self._agreement.flush(), [], final=True)
+        self._buffer = self._buffer[self._carry_end:]
+        self._carry_end = self._carried = self._carry_misses = 0
+        return self._decode(beam_size=beam_size, timestamps=timestamps)
 
     @property
     def _margin(self) -> int:
@@ -359,7 +397,7 @@ class StreamingSession:
     def _cut_at_cap(self) -> None:
         """A long stretch without a pause: close the utterance at a word
         boundary about a second from the end, so no word is split."""
-        timed = self._decode(timestamps=True)
+        timed = self._decode_new(timestamps=True)
         limit = len(self._buffer) / SAMPLE_RATE - self.CAP_KEEP
         keep = sum(1 for _w, end in timed if end <= limit)
         keep = min(max(keep, self._agreement.stable_count), len(timed))
@@ -411,12 +449,12 @@ class StreamingSession:
             self._cut_at_cap()
             return
         if silence_after >= self.END_SILENCE:
-            timed = self._decode(timestamps=True)
+            timed = self._decode_new(timestamps=True)
             self._close_utterance(timed, len(timed))
             return
         if now < self._next_decode:
             return
-        words = self._decode()
+        words = self._decode_new(patient=True)
         self._next_decode = self._clock() + self._interval
         newly, tentative = self._agreement.update(words)
         self._emit(newly, tentative)
@@ -428,7 +466,7 @@ class StreamingSession:
                 self._tick()
             spans = self._close_gap(self._append_audio())
             if spans and spans[-1][1] > self._carry_end + self._margin:
-                self._emit(self._agreement.flush(self._decode(beam_size=5)), [], final=True)
+                self._emit(self._agreement.flush(self._decode_new(beam_size=5)), [], final=True)
             elif self._carry_end and not self._agreement.held:
                 # Nothing new, and the last utterance closed without a
                 # sentence mark: re-read its carried words carefully.
