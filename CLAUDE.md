@@ -30,7 +30,7 @@ Model choice and live-typing tuning: `benchmarks/` (README there; results in `be
 - Windows 10/11 x64 only; injects text at the active cursor
 
 ## Scope Notes
-- Distributed as a Windows installer (`ShuperWhisper-Setup-x.x.x.exe`); version 2.0.1.
+- Distributed as a Windows installer (`ShuperWhisper-Setup-x.x.x.exe`); version 2.1.0.
 - Runtime files (config.json, dictionary.json, audio) and the `python-compiler/` toolkit are gitignored.
 - A React UI lives under `shuper_whisper/ui/` (build artifacts gitignored).
 - Design: docs/superpowers/specs/2026-10-04-live-dictation-design.md (stage plans in docs/superpowers/plans/).
