@@ -394,11 +394,10 @@ class WindowAPI:
         results = []
         transcriptions = []
 
-        # Build dictionary hints to bias transcription
-        initial_prompt = None
+        # The dictionary as hotwords only, as in dictation (a "Vocabulary:"
+        # prompt as well made Base type the list back on near-silence).
         hotwords = None
         if hasattr(self._app, 'dictionary'):
-            initial_prompt = self._app.dictionary.get_initial_prompt() or None
             hotwords = self._app.dictionary.get_hotwords() or None
 
         try:
@@ -423,11 +422,7 @@ class WindowAPI:
                 })
 
                 transcriber = self._app.transcriber
-                raw = transcriber.transcribe(
-                    audio_data,
-                    initial_prompt=initial_prompt,
-                    hotwords=hotwords,
-                ).strip()
+                raw = transcriber.transcribe(audio_data, hotwords=hotwords).strip()
                 normalized = self._normalize(raw)
 
                 is_match = normalized == self._normalize(word)

@@ -19,7 +19,7 @@ from .gpu_worker import RemoteTranscriber
 from .hotkey import HotkeyManager, parse_hotkey
 from .live_writer import LiveWriter
 from .overlay import CaretIndicator
-from .streaming import Hypothesis, StreamingSession
+from .streaming import Hypothesis, StreamingSession, strip_hint_echo
 from .transcriber import Transcriber
 
 STATE_IDLE = "idle"
@@ -201,7 +201,6 @@ class ShuperWhisperApp:
                     on_hypothesis=lambda h: self._on_hypothesis(h, token),
                     on_finished=lambda error: self._on_session_finished(error, token),
                     on_auto_stop=lambda: self._auto_stop(token),
-                    prompt=self.dictionary.get_initial_prompt,
                     hotwords=self.dictionary.get_hotwords() or None,
                     interval=0.4 if self.transcriber.device == "cuda" else 1.0,
                 )
@@ -270,11 +269,14 @@ class ShuperWhisperApp:
         try:
             audio = self.recorder.stop_recording()
             if not token.cancelled and not self.recorder.stream_error and not is_silent(audio):
-                text = self.transcriber.transcribe(
-                    audio,
-                    initial_prompt=self.dictionary.get_initial_prompt() or None,
-                    hotwords=self.dictionary.get_hotwords() or None,
-                )
+                # The dictionary goes in as hotwords only: given a "Vocabulary:"
+                # prompt as well, Base types the list back on near-silence.
+                hotwords = self.dictionary.get_hotwords() or None
+                text = self.transcriber.transcribe(audio, hotwords=hotwords)
+                words = text.split()
+                kept = strip_hint_echo(words, hotwords)
+                if len(kept) != len(words):
+                    text = " ".join(kept)
                 if text:
                     self._on_hypothesis(Hypothesis(text, "", True), token)
         except Exception as e:

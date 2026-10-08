@@ -88,22 +88,6 @@ class WordDictionary:
     def entries(self) -> list[DictionaryEntry]:
         return list(self._entries)
 
-    def get_initial_prompt(self) -> str:
-        """Build an initial_prompt string for the transcriber.
-
-        Includes all dictionary words and phonetic hints to bias
-        the model toward recognizing custom vocabulary.
-        """
-        if not self._entries:
-            return ""
-        parts = []
-        for entry in self._entries:
-            if entry.phonetic:
-                parts.append(f"{entry.word} ({entry.phonetic})")
-            else:
-                parts.append(entry.word)
-        return "Vocabulary: " + ", ".join(parts) + "."
-
     def get_hotwords(self) -> str:
         """Build a hotwords string for faster-whisper."""
         if not self._entries:

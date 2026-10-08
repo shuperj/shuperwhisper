@@ -43,6 +43,48 @@ def _norm(word: str) -> str:
 _SENTENCE_END = ".?!…"
 
 
+def strip_hint_echo(words: list, hint: Optional[str]) -> list:
+    """Drop the dictionary list if Whisper typed it back.
+
+    Given little or no speech, small models copy their hints: "Mackinaw,
+    claude.md, shuper, gitea". The giveaway is two or more dictionary
+    entries in a row, in the dictionary's own order; those runs go, with
+    any "Vocabulary" beside them. A dictionary word said on its own, or a
+    multi-word entry ("New York"), stays. ``words`` may be strings or
+    (word, end time) pairs; ``hint`` is the hotwords string ("a, b, c").
+    """
+    entries = [e.strip() for e in (hint or "").split(",") if e.strip()]
+    tokens = [(_norm(w), i) for i, e in enumerate(entries) for w in e.split() if _norm(w)]
+    if len(entries) < 2 or not words:
+        return words
+    normed = [_norm(w[0] if isinstance(w, tuple) else w) for w in words]
+    drop = set()
+    i = 0
+    while i < len(normed):
+        best = 0
+        for start, (token, _entry) in enumerate(tokens):
+            if token != normed[i]:
+                continue
+            k = 0
+            while (i + k < len(normed) and start + k < len(tokens)
+                   and normed[i + k] == tokens[start + k][0]):
+                k += 1
+            if (i + k < len(normed) and start + k < len(tokens) and len(normed[i + k]) >= 3
+                    and tokens[start + k][0].startswith(normed[i + k])):
+                k += 1  # the copy was cut off mid-word ("claude." for "claude.md")
+            if tokens[start + k - 1][1] != tokens[start][1]:  # spans two or more entries
+                best = max(best, k)
+        if best:
+            drop.update(range(i, i + best))
+            i += best
+        else:
+            i += 1
+    if not drop:
+        return words
+    drop.update(j for j, n in enumerate(normed) if n == "vocabulary")
+    return [w for j, w in enumerate(words) if j not in drop]
+
+
 def _sentence_end(word: str) -> str:
     """Trailing sentence punctuation of ``word`` ("" if none)."""
     return word[len(word.rstrip(_SENTENCE_END)):]
@@ -320,6 +362,7 @@ class StreamingSession:
         result = self._transcriber.transcribe_words(
             self._buffer, initial_prompt=self._prompt(), hotwords=self._hotwords,
             beam_size=beam_size or self.BEAM, timestamps=timestamps)
+        result = strip_hint_echo(result, self._hotwords)
         self._interval = max(self._base_interval, (self._clock() - started) * 1.2)
         return result
 

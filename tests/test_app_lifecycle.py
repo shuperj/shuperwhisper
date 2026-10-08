@@ -360,6 +360,18 @@ def test_type_on_stop_writes_once(make_app):
     assert a.states[-1] == "idle" and not a.busy
 
 
+def test_type_on_stop_drops_a_copied_dictionary_list(make_app):
+    a = make_app()
+    a.start()
+    for word in ("Mackinaw", "gitea", "shuper"):
+        a.dictionary.add(word)
+    a.transcriber.live = False
+    a.transcriber.text = "Mackinaw, gitea, shuper. Running late"
+    a._on_record_start()
+    a._on_record_stop()
+    assert a.writer.updates == [("Running late", "", True)]
+
+
 def test_type_on_stop_silence_writes_nothing(make_app):
     a = make_app()
     a.start()

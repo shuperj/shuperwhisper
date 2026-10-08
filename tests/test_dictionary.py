@@ -147,27 +147,6 @@ class TestDictionaryPersistence:
 
 
 class TestTranscriberIntegration:
-    def test_initial_prompt_empty(self, dictionary):
-        assert dictionary.get_initial_prompt() == ""
-
-    def test_initial_prompt_simple(self, dictionary):
-        dictionary.add("kubectl")
-        prompt = dictionary.get_initial_prompt()
-        assert "kubectl" in prompt
-        assert prompt.startswith("Vocabulary:")
-
-    def test_initial_prompt_with_phonetic(self, dictionary):
-        dictionary.add("kubectl", "cube control")
-        prompt = dictionary.get_initial_prompt()
-        assert "kubectl (cube control)" in prompt
-
-    def test_initial_prompt_multiple(self, dictionary):
-        dictionary.add("kubectl")
-        dictionary.add("pytest")
-        prompt = dictionary.get_initial_prompt()
-        assert "kubectl" in prompt
-        assert "pytest" in prompt
-
     def test_hotwords_empty(self, dictionary):
         assert dictionary.get_hotwords() == ""
 

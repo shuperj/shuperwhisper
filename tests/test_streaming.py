@@ -430,3 +430,33 @@ def test_misheard_committed_word_is_not_extended_into_the_next():
     la.commit_all("Wanton FDT".split())
     la.seed("Wanton FDT".split())
     assert la.flush("Wanton avidity, bilious envy.".split()) == ["bilious", "envy."]
+
+
+HINT = "Mackinaw, claude.md, shuper, gitea, onebynine, New York"
+
+
+def test_a_copied_dictionary_list_is_dropped():
+    from shuper_whisper.streaming import strip_hint_echo
+    echo = "Mackinaw, claude.md, shuper, gitea, onebynine Vocabulary.".split()
+    assert strip_hint_echo(echo, HINT) == []
+    assert strip_hint_echo("Mackinaw, claude. Hey there".split(), HINT) == ["Hey", "there"]
+
+
+def test_dictionary_words_said_for_real_stay():
+    from shuper_whisper.streaming import strip_hint_echo
+    for said in ("push it to gitea tonight", "we drove to Mackinaw and New York",
+                 "the Vocabulary list is long", "gitea and shuper"):
+        assert strip_hint_echo(said.split(), HINT) == said.split()
+    timed = [("in", 0.2), ("New", 0.5), ("York", 0.8)]
+    assert strip_hint_echo(timed, HINT) == timed
+
+
+def test_live_passes_drop_a_copied_list():
+    class Echo(FakeTranscriber):
+        def transcribe_words(self, audio, initial_prompt=None, hotwords=None, beam_size=1, timestamps=False):
+            return ["Mackinaw,", "claude.md,", "shuper,", "Hey"]
+    s = StreamingSession(transcriber=Echo([]), read_audio=lambda: np.zeros(0, np.float32),
+                         on_hypothesis=lambda h: None, on_finished=lambda e: None,
+                         on_auto_stop=lambda: None, hotwords=HINT)
+    s._buffer = np.zeros(SR, np.float32)
+    assert s._decode() == ["Hey"]

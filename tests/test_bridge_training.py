@@ -49,7 +49,8 @@ class TestNormalize:
 
 
 class TestTrainWordPassesDictionaryHints:
-    def test_passes_initial_prompt_and_hotwords(self, api, mock_app):
+    def test_passes_the_dictionary_as_hotwords_only(self, api, mock_app):
+        # A "Vocabulary:" prompt as well made Base type the list back.
         mock_app.dictionary.add("kubectl", "cube control")
         mock_app.transcriber.transcribe.return_value = "kubectl"
 
@@ -58,10 +59,7 @@ class TestTrainWordPassesDictionaryHints:
         calls = mock_app.transcriber.transcribe.call_args_list
         assert len(calls) == 3
         for call in calls:
-            assert call.kwargs["initial_prompt"] is not None
-            assert "kubectl" in call.kwargs["initial_prompt"]
-            assert "cube control" in call.kwargs["initial_prompt"]
-            assert call.kwargs["hotwords"] is not None
+            assert "initial_prompt" not in call.kwargs
             assert "kubectl" in call.kwargs["hotwords"]
 
     def test_passes_none_when_dictionary_empty(self, api, mock_app):
@@ -71,7 +69,6 @@ class TestTrainWordPassesDictionaryHints:
 
         calls = mock_app.transcriber.transcribe.call_args_list
         for call in calls:
-            assert call.kwargs["initial_prompt"] is None
             assert call.kwargs["hotwords"] is None
 
 
