@@ -46,6 +46,9 @@ export interface AppStatus {
   error: string | null;
   /** What the last settings change couldn't apply (it kept its old value). */
   reload_error: string | null;
+  /** Efficiency mode is on right now, and why (e.g. "game.exe is using the graphics card"). */
+  efficient?: boolean;
+  efficiency_reason?: string;
 }
 
 export interface GpuStatus {

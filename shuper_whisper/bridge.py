@@ -165,7 +165,7 @@ class WindowAPI:
             if app.busy:
                 return {'success': False, 'error': 'Finish dictating first, then try again.'}
             # Decide by what's running, not by what's on disk.
-            wanted = (config.model_size, config.compute, config.live_typing)
+            wanted = app.model_wanted(config)
             if (wanted != app.transcriber.requested or not app.transcriber.loaded
                     or app.transcriber.needs_reload_for(config.language)):
                 app.reload_in_background(config, on_done=lambda ok: save_config(app.config))
@@ -194,9 +194,11 @@ class WindowAPI:
 
     def get_status(self):
         if not self._app:
-            return {'state': 'idle', 'error': None, 'reload_error': None}
+            return {'state': 'idle', 'error': None, 'reload_error': None,
+                    'efficient': False, 'efficiency_reason': ''}
         return {'state': self._app.state, 'error': self._app.error,
-                'reload_error': self._app.reload_error}
+                'reload_error': self._app.reload_error,
+                'efficient': bool(self._app.efficient), 'efficiency_reason': self._app.efficiency_reason}
 
     def get_system_info(self):
         compute = "Not loaded"

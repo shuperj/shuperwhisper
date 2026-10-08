@@ -21,6 +21,11 @@ def apps_use_dark() -> bool:
     return _read(_PERSONALIZE, "AppsUseLightTheme") == 0
 
 
+def taskbar_uses_dark() -> bool:
+    """The taskbar (and tray) has its own light/dark setting."""
+    return _read(_PERSONALIZE, "SystemUsesLightTheme") != 1
+
+
 def parse_accent_palette(raw) -> dict[str, str]:
     """AccentPalette is 8 RGBA swatches, lightest first: Light3, Light2,
     Light1, Base, Dark1, Dark2, Dark3, (unused). Windows uses Dark1 for

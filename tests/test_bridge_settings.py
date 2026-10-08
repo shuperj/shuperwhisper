@@ -19,6 +19,8 @@ def api(tmp_path, monkeypatch):
     app.transcriber.requested = ("auto", "auto", "auto")
     app.transcriber.loaded = True
     app.transcriber.needs_reload_for.return_value = False
+    app.model_wanted.side_effect = lambda c: (c.model_size, c.compute, c.live_typing)
+    app.efficient, app.efficiency_reason = False, ""
     app.config = AppConfig()
     app.reload_config.return_value = True
     a = WindowAPI()
@@ -30,7 +32,8 @@ def api(tmp_path, monkeypatch):
 
 def test_status(api):
     api._app.state, api._app.error = "error", "Mic gone"
-    assert api.get_status() == {"state": "error", "error": "Mic gone", "reload_error": None}
+    assert api.get_status() == {"state": "error", "error": "Mic gone", "reload_error": None,
+                                "efficient": False, "efficiency_reason": ""}
 
 
 def test_system_info(api, monkeypatch):

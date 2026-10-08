@@ -14,6 +14,7 @@ from ._win32_keys import MODIFIER_VK_MAP, InjectionBlocked, get_vk
 from .audio import AudioRecorder
 from .config import AppConfig, config_dir, load_config, save_config
 from .dictionary import WordDictionary
+from .gpu_monitor import GpuMonitor
 from .hotkey import HotkeyManager, parse_hotkey
 from .live_writer import LiveWriter
 from .overlay import CaretIndicator
@@ -74,13 +75,58 @@ class ShuperWhisperApp:
         self._current: Optional[_Dictation] = None
         self._session_error: Optional[str] = None
 
+        # Efficiency mode: dictation on the processor, graphics card freed.
+        self._gpu_busy = False      # another program is using the GPU heavily
+        self._gpu_reason = ""
+        self.efficient = self._efficient_for(config.efficiency)
+        self.gpu_monitor = GpuMonitor(on_change=self._on_gpu_busy)
+
         self.recorder = AudioRecorder(device_ref=config.input_device)
-        self.transcriber = Transcriber(model_size=config.model_size, language=config.language,
-                                       compute=config.compute, live_typing=config.live_typing)
+        size, compute, live = self.model_wanted(config)
+        self.transcriber = Transcriber(model_size=size, language=config.language,
+                                       compute=compute, live_typing=live)
         self.hotkey_manager = self._make_hotkeys(config.hotkey)
         self.dictionary = WordDictionary()
         self.writer = LiveWriter(replacements=lambda: self.dictionary.get_replacements())
         self.overlay = CaretIndicator()
+
+    # -- efficiency mode ---------------------------------------------------------
+
+    def _efficient_for(self, setting: str) -> bool:
+        return setting == "on" or (setting == "auto" and self._gpu_busy)
+
+    def model_wanted(self, config: AppConfig) -> tuple[str, str, str]:
+        """(model size, compute, live typing) to run for ``config``: in
+        efficiency mode the processor, whatever the setting says."""
+        compute = "cpu" if self._efficient_for(config.efficiency) else config.compute
+        return config.model_size, compute, config.live_typing
+
+    @property
+    def efficiency_reason(self) -> str:
+        """Why efficiency mode is on ("" when it's off)."""
+        if not self.efficient:
+            return ""
+        if self.config.efficiency == "on":
+            return "turned on"
+        return f"{self._gpu_reason} is using the graphics card" if self._gpu_reason else "the graphics card is busy"
+
+    def _on_gpu_busy(self, busy: bool, reason: str) -> None:
+        """The GPU monitor's verdict changed."""
+        self._gpu_busy, self._gpu_reason = busy, reason
+        print(f"[gpu] {'busy: ' + reason if busy else 'free again'}", flush=True)
+        if self.config.efficiency == "auto" and self._running:
+            # waits out a dictation: never switches mid-sentence
+            self._run_async(self.reload_config, self.config, False, 600.0)
+
+    def set_efficiency(self, setting: str, on_done: Optional[Callable[[], None]] = None) -> None:
+        """The tray's efficiency menu: apply and save, off the caller's thread."""
+        def _work():
+            new = AppConfig(**{**self.config.to_dict(), "efficiency": setting})
+            if self.reload_config(new, wait=600.0):
+                save_config(self.config)
+            if on_done:
+                on_done()
+        self._run_async(_work)
 
     # -- state ---------------------------------------------------------------
 
@@ -315,7 +361,9 @@ class ShuperWhisperApp:
                 self._fail(str(e))
                 return
             self._running = True
+            self.overlay.set_efficient(self.efficient)
             self._set_state(STATE_IDLE)
+        self.gpu_monitor.start()
         print(f"[app] Ready. Press {self.config.hotkey} to dictate.", flush=True)
 
     def shutdown(self, destroy_overlay: bool = True) -> None:
@@ -323,6 +371,7 @@ class ShuperWhisperApp:
         if current:
             current.stopping = True
         self.hotkey_manager.unregister()
+        self.gpu_monitor.stop()
         if destroy_overlay:
             self.overlay.destroy()
         else:
@@ -379,18 +428,28 @@ class ShuperWhisperApp:
             self.recorder = AudioRecorder(device_ref=new_config.input_device)
         applied.input_device = new_config.input_device
 
-        wanted = (new_config.model_size, new_config.compute, new_config.live_typing)
+        efficient = self._efficient_for(new_config.efficiency)
+        wanted = self.model_wanted(new_config)
         if (force_model or wanted != self.transcriber.requested or not self.transcriber.loaded
                 or self.transcriber.needs_reload_for(new_config.language)):
             self._set_state(STATE_LOADING)
-            candidate = Transcriber(model_size=new_config.model_size, language=new_config.language,
-                                    compute=new_config.compute, live_typing=new_config.live_typing)
+            size, compute, live = wanted
+            candidate = Transcriber(model_size=size, language=new_config.language,
+                                    compute=compute, live_typing=live)
             try:
                 candidate.load_model()  # the old model keeps working if this fails
-                self.transcriber = candidate
-                applied.model_size, applied.compute, applied.live_typing = wanted
+                self.transcriber = candidate  # (the old one's GPU memory goes with it)
+                applied.model_size = new_config.model_size
+                applied.compute, applied.live_typing = new_config.compute, new_config.live_typing
+                applied.efficiency = new_config.efficiency
             except Exception as e:
                 problems.append(f"Couldn't load the speech model: {e}")
+                efficient = self.efficient
+        else:
+            applied.efficiency = new_config.efficiency
+        if efficient != self.efficient:
+            self.efficient = efficient
+            self.overlay.set_efficient(efficient)
         self.transcriber.language = new_config.language
         applied.language = new_config.language
 
@@ -408,7 +467,6 @@ class ShuperWhisperApp:
 
         self.hotkey_manager.mode = new_config.shortcut
         applied.shortcut = new_config.shortcut
-        applied.efficiency = new_config.efficiency
 
         self.config = applied
         self.reload_error = "; ".join(problems) or None

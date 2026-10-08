@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { Cpu, Globe, Hand, Power } from "lucide-react";
+import { Cpu, Globe, Hand, Leaf, Power } from "lucide-react";
 import { useSettings } from "@/hooks/useSettings";
 import type { AppConfig } from "@/lib/types";
 import { useTraining } from "@/hooks/useTraining";
-import { getAutostart, setAutostart } from "@/lib/bridge";
+import { getAutostart, getStatus, setAutostart } from "@/lib/bridge";
 import { Card, Section, Select, Toggle } from "@/components/fluent";
 import { ShortcutCard } from "@/components/ShortcutCard";
 import { MicrophoneCard } from "@/components/MicrophoneCard";
@@ -39,6 +39,18 @@ export default function App() {
 
   useEffect(() => {
     getAutostart().then(setAutostartState).catch(() => {});
+  }, []);
+
+  // Efficiency mode can switch on by itself (a game starts), so keep its card current.
+  const [efficiency, setEfficiency] = useState<{ on: boolean; reason: string }>({ on: false, reason: "" });
+  useEffect(() => {
+    const read = () =>
+      getStatus()
+        .then((st) => setEfficiency({ on: !!st.efficient, reason: st.efficiency_reason ?? "" }))
+        .catch(() => {});
+    read();
+    const timer = window.setInterval(read, 5000);
+    return () => clearInterval(timer);
   }, []);
 
   if (loading) return <div className="p-6 text-muted text-[13px]">Loading…</div>;
@@ -125,6 +137,26 @@ export default function App() {
               pollUntilSettled();
             }}
           />
+          <Card
+            icon={Leaf}
+            title="Efficiency mode"
+            description={
+              (efficiency.on ? `On now: ${efficiency.reason}. ` : "") +
+              "Runs dictation on the processor and frees the graphics card. Automatic turns it on while a game or another program uses the graphics card heavily."
+            }
+            error={errors.efficiency}
+          >
+            <Select
+              value={config.efficiency}
+              disabled={busy}
+              onChange={(v) => apply({ efficiency: v as AppConfig["efficiency"] })}
+              options={[
+                { value: "auto", label: "Automatic" },
+                { value: "on", label: "On" },
+                { value: "off", label: "Off" },
+              ]}
+            />
+          </Card>
         </Section>
 
         <Section title="Dictionary">

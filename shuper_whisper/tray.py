@@ -26,11 +26,23 @@ from .config import AppConfig, load_config
 # Icon colors for each state
 _COLORS = {
     STATE_IDLE: "#CCCCCC",
-    STATE_RECORDING: "#FF3333",
-    STATE_PROCESSING: "#FFAA00",
     STATE_LOADING: "#6699FF",
-    STATE_ERROR: "#E81123",
+    STATE_ERROR: "#E81123",  # red means something is wrong, nothing else
 }
+_EFFICIENT = "#6CCB5F"  # efficiency mode: green the whole time
+
+
+def _icon_color(state: str, efficient: bool) -> str:
+    """Error red and loading blue win; then efficiency green; dictating is the
+    Windows accent colour (like the pill); idle is grey."""
+    if state in (STATE_ERROR, STATE_LOADING):
+        return _COLORS[state]
+    if efficient:
+        return _EFFICIENT
+    if state in (STATE_RECORDING, STATE_PROCESSING):
+        accents = system_theme.accent_colors()
+        return accents["dark"] if system_theme.taskbar_uses_dark() else accents["light"]
+    return _COLORS[STATE_IDLE]
 
 # Resolve the path to the React build (handles both dev and PyInstaller)
 if getattr(sys, 'frozen', False):
@@ -141,8 +153,11 @@ class TrayController:
     def _on_state_change(self, state: str) -> None:
         self._current_state = state
         if self._icon is not None:
-            self._icon.icon = _make_icon(_COLORS.get(state, _COLORS[STATE_IDLE]))
-            detail = self.app.error if state == STATE_ERROR and self.app.error else state.capitalize()
+            self._icon.icon = _make_icon(_icon_color(state, self.app.efficient))
+            words = {STATE_RECORDING: "Dictating", STATE_PROCESSING: "Finishing"}
+            detail = self.app.error if state == STATE_ERROR and self.app.error else                 words.get(state, state.capitalize())
+            if self.app.efficient and state != STATE_ERROR:
+                detail += f" (efficiency mode: {self.app.efficiency_reason})"
             # Windows caps tray tooltips at 127 characters.
             self._icon.title = f"ShuperWhisper - {detail}"[:127]
 
@@ -195,9 +210,22 @@ class TrayController:
             except Exception:
                 pass
 
+    def _efficiency_item(self, setting: str, label: str) -> pystray.MenuItem:
+        def _choose(icon, item):
+            self.app.set_efficiency(setting, on_done=icon.update_menu)
+        return pystray.MenuItem(label, _choose, radio=True,
+                                checked=lambda item: self.app.config.efficiency == setting)
+
     def _build_menu(self) -> pystray.Menu:
+        def _efficiency_title(item) -> str:
+            return f"Efficiency mode: {'on' if self.app.efficient else 'off'}"
         return pystray.Menu(
             pystray.MenuItem("Settings...", self._open_settings),
+            pystray.MenuItem(_efficiency_title, pystray.Menu(
+                self._efficiency_item("auto", "Automatic (when a game is running)"),
+                self._efficiency_item("on", "On"),
+                self._efficiency_item("off", "Off"),
+            )),
             pystray.MenuItem(
                 "Start with Windows",
                 self._toggle_autostart,
@@ -225,7 +253,7 @@ class TrayController:
         """
         self._icon = pystray.Icon(
             name="ShuperWhisper",
-            icon=_make_icon(_COLORS[STATE_IDLE]),
+            icon=_make_icon(_icon_color(STATE_IDLE, self.app.efficient)),
             title="ShuperWhisper - Starting...",
             menu=self._build_menu(),
         )

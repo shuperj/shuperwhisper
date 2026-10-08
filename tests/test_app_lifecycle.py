@@ -81,6 +81,10 @@ class FakeIndicator:
 
     def __init__(self):
         self.errors = []
+        self.efficient = False
+
+    def set_efficient(self, on):
+        self.efficient = on
 
     def show_error(self, m):
         self.errors.append(m)
@@ -126,6 +130,17 @@ class FakeSession:
         self.on_finished(None)
 
 
+class FakeGpuMonitor:
+    def __init__(self, on_change):
+        self.on_change = on_change
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
+
+
 @pytest.fixture
 def make_app(monkeypatch, tmp_path):
     monkeypatch.setattr(app_mod, "AudioRecorder", FakeRecorder)
@@ -134,6 +149,7 @@ def make_app(monkeypatch, tmp_path):
     monkeypatch.setattr(app_mod, "CaretIndicator", FakeIndicator)
     monkeypatch.setattr(app_mod, "LiveWriter", FakeWriter)
     monkeypatch.setattr(app_mod, "StreamingSession", FakeSession)
+    monkeypatch.setattr(app_mod, "GpuMonitor", FakeGpuMonitor)
     monkeypatch.setattr(app_mod.audio_devices, "migrate", lambda v: v)
     monkeypatch.setattr(app_mod, "save_config", lambda c: None)
     monkeypatch.setattr(app_mod.uia, "warm_up", lambda: None)
@@ -431,3 +447,41 @@ def test_start_failure_after_mic_opened_releases_session(make_app, monkeypatch):
     monkeypatch.setattr(a.writer, "begin", lambda **k: (_ for _ in ()).throw(RuntimeError("boom")))
     a._on_record_start()
     assert not a.busy and a.states[-1] == "error" and "boom" in a.error
+
+
+# -- efficiency mode ------------------------------------------------------------------
+
+def test_busy_gpu_moves_dictation_to_the_processor_and_back(make_app):
+    a = make_app()
+    a.start()
+    assert a.transcriber.requested[1] == "auto" and not a.efficient
+    a.gpu_monitor.on_change(True, "game.exe")
+    assert a.efficient and a.overlay.efficient
+    assert a.transcriber.requested[1] == "cpu"
+    assert a.config.compute == "auto"                 # the setting itself is untouched
+    assert a.efficiency_reason == "game.exe is using the graphics card"
+    a.gpu_monitor.on_change(False, "")
+    assert not a.efficient and a.transcriber.requested[1] == "auto"
+
+
+def test_efficiency_off_ignores_a_busy_gpu(make_app):
+    a = make_app(efficiency="off")
+    a.start()
+    a.gpu_monitor.on_change(True, "game.exe")
+    assert not a.efficient and a.transcriber.requested[1] == "auto"
+
+
+def test_efficiency_on_starts_on_the_processor(make_app):
+    a = make_app(efficiency="on")
+    assert a.transcriber.requested[1] == "cpu"
+    a.start()
+    assert a.efficient and a.overlay.efficient and a.efficiency_reason == "turned on"
+
+
+def test_tray_efficiency_choice_applies_and_saves(make_app, monkeypatch):
+    saved = []
+    monkeypatch.setattr(app_mod, "save_config", lambda c: saved.append(c.efficiency))
+    a = make_app()
+    a.start()
+    a.set_efficiency("on")
+    assert a.efficient and a.config.efficiency == "on" and saved == ["on"]

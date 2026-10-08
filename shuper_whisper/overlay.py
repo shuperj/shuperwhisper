@@ -1,4 +1,6 @@
-"""Small dictation indicator: a pill with a mic glyph and level bars.
+"""Small dictation indicator: a pill with a mic glyph and level bars (a
+leaf on dark green in efficiency mode, so it's clear dictation is running on
+the processor).
 
 Drawn with PIL and shown in a native layered window (per-pixel alpha via
 UpdateLayeredWindow), so it's truly transparent around the pill in every
@@ -9,6 +11,7 @@ continues in a different field.
 
 import ctypes
 import ctypes.wintypes as wt
+import math
 import os
 import threading
 import time
@@ -111,12 +114,45 @@ class Look:
         accents = system_theme.accent_colors()
         return cls(dark, accents["dark"] if dark else accents["light"])
 
+    def efficient(self) -> "Look":
+        """Efficiency mode: dark green in either theme, green leaf and bars."""
+        look = Look(True, "#6ccb5f")
+        look.bg = (22, 64, 34, 246)
+        look.border = (108, 203, 95, 60)
+        look.muted = (150, 190, 150, 255)
+        return look
 
-def render(look: Look, scale: float, state: str = "listening", levels=(), message: str = "") -> Image.Image:
+
+def _leaf(draw: ImageDraw.ImageDraw, cx: float, cy: float, size: float, colour) -> None:
+    """A leaf pointing up and to the right, with a vein: two arcs meeting
+    at the tip and the stem."""
+    length, width = size, size * 0.55
+    angle = math.radians(-45)
+    outline = []
+    for i in range(41):
+        t = math.pi * i / 40
+        outline.append((length / 2 * math.cos(t), width / 2 * math.sin(t) ** 0.9))
+    outline += [(x, -y) for x, y in reversed(outline)]
+
+    def place(x, y):
+        return (cx + x * math.cos(angle) - y * math.sin(angle), cy + x * math.sin(angle) + y * math.cos(angle))
+
+    draw.polygon([place(x, y) for x, y in outline], fill=colour)
+    vein = max(1, int(size / 9))
+    draw.line([place(-length / 2 - size * 0.12, 0), place(length / 2 * 0.65, 0)], fill=(22, 64, 34, 255),
+              width=vein)
+    draw.line([place(-length / 2 - size * 0.12, 0), place(-length / 2, 0)], fill=colour, width=vein)
+
+
+def render(look: Look, scale: float, state: str = "listening", levels=(), message: str = "",
+           efficient: bool = False) -> Image.Image:
     """The indicator as an RGBA image, ``scale`` x the 1x layout.
 
     states: listening (mic + level bars), finishing (mic + dots), error (mic + message).
+    ``efficient``: efficiency mode's dark green pill with a leaf.
     """
+    if efficient:
+        look = look.efficient()
     ss = 3  # supersampling for smooth edges
     k = scale * ss
     margin, height = 4 * k, 26 * k
@@ -144,7 +180,9 @@ def render(look: Look, scale: float, state: str = "listening", levels=(), messag
     x = margin + 10 * k
     cy = margin + height / 2
     colour = look.error if state == "error" else look.accent
-    if icon_font:
+    if efficient and state != "error":
+        _leaf(draw, x + 6.5 * k, cy, 13 * k, colour)
+    elif icon_font:
         draw.text((x + 6.5 * k, cy), _MIC, font=icon_font, fill=colour, anchor="mm")
     else:  # simple capsule mic
         draw.rounded_rectangle((x + 4 * k, cy - 6 * k, x + 9 * k, cy + 2 * k), radius=2.5 * k, fill=colour)
@@ -190,6 +228,7 @@ class CaretIndicator:
         self._state = "listening"
         self._levels: list[float] = []
         self._message = ""
+        self._efficient = False
         self._look: Optional[Look] = None
         self._scale = 1.0
         self._pos = (0, 0)
@@ -231,7 +270,7 @@ class CaretIndicator:
         """Render the current state and push it to the layered window."""
         if not self._hwnd or not self._look:
             return
-        img = render(self._look, self._scale, self._state, self._levels, self._message)
+        img = render(self._look, self._scale, self._state, self._levels, self._message, self._efficient)
         w, h = img.size
         data = _premultiplied_bgra(img)
         screen = user32.GetDC(None)
@@ -279,7 +318,8 @@ class CaretIndicator:
         return (rc.left, rc.top, rc.right, rc.bottom), scale
 
     def _size(self) -> tuple[int, int]:
-        return render(self._look or Look(True, "#4cc2ff"), self._scale, self._state, (), self._message).size
+        return render(self._look or Look(True, "#4cc2ff"), self._scale, self._state, (), self._message,
+                      self._efficient).size
 
     def reposition(self, use_uia: bool = True) -> None:
         """Place the pill just under the caret (or at the bottom of the
@@ -314,6 +354,13 @@ class CaretIndicator:
                 self._paint()
                 user32.SetWindowPos(self._hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
                                     _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOACTIVATE | _SWP_SHOWWINDOW)
+
+    def set_efficient(self, efficient: bool) -> None:
+        """Efficiency mode on or off (shows from the next paint)."""
+        with self._lock:
+            self._efficient = efficient
+            if self._visible:
+                self._paint()
 
     def set_state(self, state: str) -> None:
         with self._lock:
