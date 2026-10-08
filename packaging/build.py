@@ -34,6 +34,7 @@ def main() -> None:
         "--name", "ShuperWhisper", "--noconsole", "--noconfirm", "--onedir",
         "--icon", "packaging/ShuperWhisper.ico",
         "--add-data", f"shuper_whisper/ui/dist{os.pathsep}shuper_whisper/ui/dist",
+        "--add-data", f"shuper_whisper/assets{os.pathsep}shuper_whisper/assets",
         "--collect-data", "faster_whisper",
         "--collect-binaries", "ctranslate2",
         "--collect-submodules", "comtypes.gen",

@@ -35,8 +35,10 @@ _COLORS = {
 # Resolve the path to the React build (handles both dev and PyInstaller)
 if getattr(sys, 'frozen', False):
     _DIST_DIR = os.path.join(sys._MEIPASS, 'shuper_whisper', 'ui', 'dist')
+    _LOGO_MASK = os.path.join(sys._MEIPASS, 'shuper_whisper', 'assets', 'logo_mask.png')
 else:
     _DIST_DIR = os.path.join(os.path.dirname(__file__), 'ui', 'dist')
+    _LOGO_MASK = os.path.join(os.path.dirname(__file__), 'assets', 'logo_mask.png')
 
 # Minimal HTTP server for serving React static files.
 # WebView2 blocks ES module scripts over file:// protocol, so we need HTTP.
@@ -91,12 +93,28 @@ def _ensure_static_server() -> int:
     return _static_server_port
 
 
+_logo_mask: Optional[Image.Image] = None
+
+
 def _make_icon(color: str, size: int = 64) -> Image.Image:
-    """Generate a simple circular icon with the given color."""
+    """The ShuperWhisper logo (no background) in the given colour; a plain
+    circle if the logo file is missing. The mask comes from
+    packaging/make_logo_assets.py."""
+    global _logo_mask
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    margin = 4
-    draw.ellipse([margin, margin, size - margin, size - margin], fill=color)
+    if _logo_mask is None and os.path.exists(_LOGO_MASK):
+        _logo_mask = Image.open(_LOGO_MASK).convert("L")
+    if _logo_mask is None:
+        margin = 4
+        ImageDraw.Draw(img).ellipse([margin, margin, size - margin, size - margin], fill=color)
+        return img
+    # The logo is wide: fit its width, centre it vertically.
+    width = size
+    height = round(_logo_mask.height * width / _logo_mask.width)
+    mask = _logo_mask.resize((width, height), Image.LANCZOS)
+    logo = Image.new("RGBA", (width, height), color)
+    logo.putalpha(mask)
+    img.paste(logo, (0, (size - height) // 2))
     return img
 
 
