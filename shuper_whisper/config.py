@@ -97,7 +97,7 @@ def _validate_device(value: object) -> object:
 @dataclass
 class AppConfig:
     hotkey: str = "ctrl+shift+space"
-    # "auto" picks large-v3-turbo on a CUDA GPU and small on CPU (transcriber.py).
+    # "auto" picks base.en for English and base otherwise (transcriber.py).
     model_size: str = "auto"
     # {"name": str, "hostapi": str | None}, a legacy int index, or None for default.
     input_device: object = None

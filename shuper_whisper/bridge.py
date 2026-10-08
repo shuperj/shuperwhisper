@@ -8,7 +8,7 @@ from . import autostart, gpu_runtime, system_theme
 from .audio import AudioRecorder
 from .transcriber import gpu_name
 
-_MODEL_LABELS = {"large-v3-turbo": "Large v3 Turbo", "large-v3": "Large v3"}
+_MODEL_LABELS = {"large-v3-turbo": "Large v3 Turbo", "base.en": "Base (English)"}
 # One GPU download at a time, shared by every settings window.
 _gpu_setup = gpu_runtime.GpuSetup()
 from ._win32_keys import (

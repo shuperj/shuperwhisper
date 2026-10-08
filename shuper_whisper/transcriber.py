@@ -139,12 +139,14 @@ def select_compute(preference: str = "auto") -> tuple[str, str]:
     return ("cpu", "int8")
 
 
-def resolve_model_size(model_size: str, device: str, live: bool = False) -> str:
+def resolve_model_size(model_size: str, device: str, live: bool = False, language: str = "en") -> str:
+    """"auto" is Base on any device: in the benchmark on the user's own voice
+    it was close to the large models at a fraction of the memory, and fast
+    enough for live typing on a CPU. English gets the English-only base.en
+    (2.3% vs 4.3% wrong words live)."""
     if model_size != "auto":
         return model_size
-    if device == "cuda":
-        return "large-v3-turbo"
-    return "base" if live else "small"  # live re-decodes every second; small is too slow for that
+    return "base.en" if language == "en" else "base"
 
 
 class Transcriber:
@@ -167,7 +169,7 @@ class Transcriber:
         """Fix device, precision and model size; return the model source."""
         self._device, self._compute_type = device, compute_type
         self._live = self._live_pref == "on" or (self._live_pref == "auto" and device == "cuda")
-        self._model_size = resolve_model_size(self._requested_size, device, self._live)
+        self._model_size = resolve_model_size(self._requested_size, device, self._live, self._language)
         return _bundled_model_path(self._model_size) or self._model_size
 
     def load_model(self) -> None:
@@ -275,6 +277,12 @@ class Transcriber:
     @property
     def language(self) -> str:
         return self._language
+
+    def needs_reload_for(self, language: str) -> bool:
+        """Would "auto" pick a different model for ``language`` (base.en
+        only speaks English)?"""
+        return (self._requested_size == "auto" and self._device is not None
+                and resolve_model_size("auto", self._device, self._live, language) != self._model_size)
 
     @language.setter
     def language(self, value: str) -> None:

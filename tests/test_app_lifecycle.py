@@ -46,6 +46,9 @@ class FakeTranscriber:
         self.language = language
         self.text = "hello world"
 
+    def needs_reload_for(self, language):
+        return False
+
     def load_model(self):
         if self.fail:
             raise RuntimeError("model download failed")

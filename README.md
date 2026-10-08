@@ -15,7 +15,8 @@ Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast lo
 - **Clean output:** single spaces, no em-dashes, and fillers like "um" and "uh" are dropped. Spacing and capitalisation follow what's already before your cursor.
 - **Custom dictionary:** add names and jargon. If ShuperWhisper keeps mishearing a word, put what it hears in the hint and it's swapped automatically.
 - **Any microphone,** including Voicemeeter buses and other virtual devices. Devices are remembered by name, so they survive restarts.
-- **NVIDIA GPU** is used automatically once its libraries are set up (`large-v3-turbo` model), with a CPU fallback (`small` model). Settings can force the CPU. Intel/AMD integrated graphics aren't used; on those PCs it runs on the processor.
+- **Speech model:** Automatic uses Base (the English-only version for English), which is light enough for live typing on a processor. Large v3 Turbo is the most accurate if you have the graphics memory to spare; the benchmark in `benchmarks/` compares them.
+- **NVIDIA GPU** is used automatically once its libraries are set up, with a CPU fallback. Settings can force the CPU. Intel/AMD integrated graphics aren't used; on those PCs it runs on the processor.
 
 ## Installation
 

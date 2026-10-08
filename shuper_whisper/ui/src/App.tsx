@@ -11,7 +11,7 @@ import { DictionarySection } from "@/components/DictionarySection";
 
 // Memory and accuracy from benchmarks/results/*-full.md (live typing, real speech).
 const MODEL_LABELS: Record<string, string> = {
-  auto: "Automatic (recommended)",
+  auto: "Automatic: Base (recommended)",
   "large-v3-turbo": "Large v3 Turbo (1.5 GB)",
   small: "Small (1 GB)",
   base: "Base (0.6 GB)",

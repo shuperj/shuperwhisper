@@ -359,7 +359,8 @@ class ShuperWhisperApp:
         applied.input_device = new_config.input_device
 
         wanted = (new_config.model_size, new_config.compute, new_config.live_typing)
-        if force_model or wanted != self.transcriber.requested or not self.transcriber.loaded:
+        if (force_model or wanted != self.transcriber.requested or not self.transcriber.loaded
+                or self.transcriber.needs_reload_for(new_config.language)):
             self._set_state(STATE_LOADING)
             candidate = Transcriber(model_size=new_config.model_size, language=new_config.language,
                                     compute=new_config.compute, live_typing=new_config.live_typing)

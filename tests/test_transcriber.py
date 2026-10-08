@@ -47,10 +47,22 @@ def test_transcribe_words_is_greedy_and_split():
     assert t._model.kwargs["vad_filter"] is False
 
 
-def test_auto_model_depends_on_live_on_cpu():
-    assert tr.resolve_model_size("auto", "cpu", live=True) == "base"
-    assert tr.resolve_model_size("auto", "cpu", live=False) == "small"
-    assert tr.resolve_model_size("auto", "cuda", live=True) == "large-v3-turbo"
+def test_auto_model_is_base_english_only_for_english():
+    for device, live in (("cpu", True), ("cpu", False), ("cuda", True)):
+        assert tr.resolve_model_size("auto", device, live=live) == "base.en"
+        assert tr.resolve_model_size("auto", device, live=live, language="de") == "base"
+        assert tr.resolve_model_size("auto", device, live=live, language="auto") == "base"
+
+
+def test_language_change_reloads_an_english_only_auto_model(monkeypatch):
+    monkeypatch.setattr(tr, "WhisperModel", lambda *a, **k: object())
+    t = tr.Transcriber(model_size="auto", language="en", device="cuda", compute_type="int8")
+    t.load_model()
+    assert t.model_size == "base.en"
+    assert t.needs_reload_for("de") and not t.needs_reload_for("en")
+    fixed = tr.Transcriber(model_size="small", language="en", device="cuda", compute_type="int8")
+    fixed.load_model()
+    assert not fixed.needs_reload_for("de")
 
 
 @pytest.mark.parametrize("pref,device,live", [
@@ -63,10 +75,9 @@ def test_live_decided_from_preference_and_device(monkeypatch, pref, device, live
     assert t.live is live
 
 
-def test_auto_model_size():
-    assert tr.resolve_model_size("auto", "cuda") == "large-v3-turbo"
-    assert tr.resolve_model_size("auto", "cpu") == "small"
+def test_chosen_model_size_is_kept():
     assert tr.resolve_model_size("base", "cuda") == "base"
+    assert tr.resolve_model_size("large-v3-turbo", "cpu", language="de") == "large-v3-turbo"
 
 
 def test_cpu_preference_never_probes_cuda(monkeypatch):
@@ -89,8 +100,8 @@ def test_cuda_load_failure_falls_back_to_cpu(monkeypatch):
     monkeypatch.setattr(tr, "_bundled_model_path", lambda size: None)
     t = tr.Transcriber(model_size="auto", device="cuda", compute_type="float16")
     t.load_model()
-    assert calls == [("large-v3-turbo", "cuda"), ("small", "cpu")]
-    assert t.device == "cpu" and t.model_size == "small"
+    assert calls == [("base.en", "cuda"), ("base.en", "cpu")]
+    assert t.device == "cpu" and t.model_size == "base.en"
 
 
 def test_only_complete_runtime_folders_are_searched(monkeypatch, tmp_path):
@@ -142,7 +153,7 @@ def test_cuda_failure_during_transcribe_retries_on_cpu(monkeypatch):
     t = tr.Transcriber(model_size="auto", device="cuda", compute_type="float16")
     t._model = Broken()
     assert t.transcribe(np.zeros(16000, np.float32)) == "Hello."
-    assert t.device == "cpu" and t.model_size == "small"
+    assert t.device == "cpu" and t.model_size == "base.en"
 
 
 def test_requested_reports_configuration():
