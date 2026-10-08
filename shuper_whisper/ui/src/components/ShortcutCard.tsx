@@ -36,7 +36,7 @@ export function ShortcutCard({
     <Card
       icon={Keyboard}
       title="Dictation shortcut"
-      description="Press once to start dictating, press again to stop."
+      description="The key that starts dictation. Click the button to change it."
       error={error}
     >
       <Button onClick={capture} disabled={capturing || disabled}>

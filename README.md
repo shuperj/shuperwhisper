@@ -8,7 +8,8 @@ Built on [faster-whisper](https://github.com/SYSTRAN/faster-whisper) for fast lo
 
 ## How it works
 
-- **Press once to start, press again to stop** (default `ctrl+shift+space`). Your words are typed at your cursor, in whatever app has focus, and your clipboard is never touched.
+- **Hold the shortcut to talk, or tap it to start and tap again to stop** (default `ctrl+shift+space`; settings can make it double-tap). Your words are typed at your cursor, in whatever app has focus, and your clipboard is never touched.
+- **Efficiency mode** moves dictation to the processor and frees the graphics card while a game or another program is using it heavily (or always, if you turn it on). The tray icon turns green and the pill shows a leaf.
 - **Live typing (with an NVIDIA GPU):** words appear as you speak, and the last few may adjust themselves as the sentence becomes clear, like dictation on a Mac. Click into another field mid-sentence and dictation carries on there; the first field is left alone. On a CPU-only PC the text is typed all at once when you stop (Settings can switch live typing on anyway).
 - **A small pill under your cursor** shows that ShuperWhisper is listening. Dictation stops by itself after 30 seconds of silence.
 - **Spoken commands:** "comma", "question mark", "exclamation point", "new line", "new paragraph", "period" and "colon" become the real thing. Pause briefly around "period", "colon" and "new line" so they aren't read as ordinary words ("a trial period").
