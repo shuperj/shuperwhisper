@@ -278,6 +278,10 @@ class Transcriber:
     def language(self) -> str:
         return self._language
 
+    def close(self) -> None:
+        """Nothing to end: the model is freed with the object. (The helper
+        process version, gpu_worker.RemoteTranscriber, ends its process.)"""
+
     def needs_reload_for(self, language: str) -> bool:
         """Would "auto" pick a different model for ``language`` (base.en
         only speaks English)?"""

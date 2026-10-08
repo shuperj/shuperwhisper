@@ -15,6 +15,7 @@ from .audio import AudioRecorder
 from .config import AppConfig, config_dir, load_config, save_config
 from .dictionary import WordDictionary
 from .gpu_monitor import GpuMonitor
+from .gpu_worker import RemoteTranscriber
 from .hotkey import HotkeyManager, parse_hotkey
 from .live_writer import LiveWriter
 from .overlay import CaretIndicator
@@ -82,9 +83,7 @@ class ShuperWhisperApp:
         self.gpu_monitor = GpuMonitor(on_change=self._on_gpu_busy)
 
         self.recorder = AudioRecorder(device_ref=config.input_device)
-        size, compute, live = self.model_wanted(config)
-        self.transcriber = Transcriber(model_size=size, language=config.language,
-                                       compute=compute, live_typing=live)
+        self.transcriber = self._new_transcriber(self.model_wanted(config), config.language)
         self.hotkey_manager = self._make_hotkeys(config.hotkey)
         self.dictionary = WordDictionary()
         self.writer = LiveWriter(replacements=lambda: self.dictionary.get_replacements())
@@ -100,6 +99,14 @@ class ShuperWhisperApp:
         efficiency mode the processor, whatever the setting says."""
         compute = "cpu" if self._efficient_for(config.efficiency) else config.compute
         return config.model_size, compute, config.live_typing
+
+    @staticmethod
+    def _new_transcriber(wanted: tuple[str, str, str], language: str):
+        """Anything that may use the GPU runs in a helper process, so ending it
+        frees all of its graphics memory (gpu_worker.py); processor-only runs here."""
+        size, compute, live = wanted
+        cls = Transcriber if compute == "cpu" else RemoteTranscriber
+        return cls(model_size=size, language=language, compute=compute, live_typing=live)
 
     @property
     def efficiency_reason(self) -> str:
@@ -372,6 +379,7 @@ class ShuperWhisperApp:
             current.stopping = True
         self.hotkey_manager.unregister()
         self.gpu_monitor.stop()
+        self.transcriber.close()
         if destroy_overlay:
             self.overlay.destroy()
         else:
@@ -433,12 +441,11 @@ class ShuperWhisperApp:
         if (force_model or wanted != self.transcriber.requested or not self.transcriber.loaded
                 or self.transcriber.needs_reload_for(new_config.language)):
             self._set_state(STATE_LOADING)
-            size, compute, live = wanted
-            candidate = Transcriber(model_size=size, language=new_config.language,
-                                    compute=compute, live_typing=live)
+            candidate = self._new_transcriber(wanted, new_config.language)
             try:
                 candidate.load_model()  # the old model keeps working if this fails
-                self.transcriber = candidate  # (the old one's GPU memory goes with it)
+                old, self.transcriber = self.transcriber, candidate
+                old.close()  # a helper process ends, and its graphics memory with it
                 applied.model_size = new_config.model_size
                 applied.compute, applied.live_typing = new_config.compute, new_config.live_typing
                 applied.efficiency = new_config.efficiency

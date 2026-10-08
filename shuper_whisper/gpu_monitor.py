@@ -88,9 +88,10 @@ class _PROCESSENTRY32W(ctypes.Structure):
                 ("szExeFile", ctypes.c_wchar * 260)]
 
 
-def _process_names() -> dict[int, str]:
+def _process_names(parents: Optional[dict] = None) -> dict[int, str]:
     """pid -> exe name for every process, from a toolhelp snapshot (works for
-    protected processes, which can't be opened)."""
+    protected processes, which can't be opened). Fills ``parents`` with
+    pid -> parent pid if given."""
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateToolhelp32Snapshot.restype = wt.HANDLE
     snap = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
@@ -101,6 +102,8 @@ def _process_names() -> dict[int, str]:
     ok = kernel32.Process32FirstW(snap, ctypes.byref(entry))
     while ok:
         names[entry.th32ProcessID] = entry.szExeFile.lower()
+        if parents is not None:
+            parents[entry.th32ProcessID] = entry.th32ParentProcessID
         ok = kernel32.Process32NextW(snap, ctypes.byref(entry))
     kernel32.CloseHandle(snap)
     return names
@@ -118,6 +121,7 @@ class PdhSampler:
         self._memory = wt.HANDLE()
         self._load = wt.HANDLE()
         self._names: dict[int, str] = {}
+        self._parents: dict[int, int] = {}
         if self._pdh.PdhOpenQueryW(None, None, ctypes.byref(self._query)) != 0:
             raise OSError("PdhOpenQuery failed")
         for path, handle in ((self.MEMORY, self._memory), (self.LOAD, self._load)):
@@ -149,7 +153,8 @@ class PdhSampler:
 
     def _name(self, pid: int) -> str:
         if pid not in self._names:
-            self._names = _process_names()  # also catches protected ones like dwm.exe
+            self._parents = {}
+            self._names = _process_names(self._parents)  # also catches protected ones like dwm.exe
         return self._names.get(pid, f"pid {pid}")
 
     def sample(self) -> list[tuple[str, float, float]]:
@@ -159,9 +164,9 @@ class PdhSampler:
         own = os.getpid()
         out = []
         for pid in set(memory) | set(load):
-            if pid == own:
-                continue
             name = self._name(pid)
+            if pid == own or self._parents.get(pid) == own:  # us, or our model helper
+                continue
             if name not in IGNORED:
                 out.append((name, memory.get(pid, 0.0), load.get(pid, 0.0)))
         return out

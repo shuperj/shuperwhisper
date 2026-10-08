@@ -49,6 +49,9 @@ class FakeTranscriber:
     def needs_reload_for(self, language):
         return False
 
+    def close(self):
+        self.closed = True
+
     def load_model(self):
         if self.fail:
             raise RuntimeError("model download failed")
@@ -145,6 +148,7 @@ class FakeGpuMonitor:
 def make_app(monkeypatch, tmp_path):
     monkeypatch.setattr(app_mod, "AudioRecorder", FakeRecorder)
     monkeypatch.setattr(app_mod, "Transcriber", FakeTranscriber)
+    monkeypatch.setattr(app_mod, "RemoteTranscriber", FakeTranscriber)
     monkeypatch.setattr(app_mod, "HotkeyManager", FakeHotkeys)
     monkeypatch.setattr(app_mod, "CaretIndicator", FakeIndicator)
     monkeypatch.setattr(app_mod, "LiveWriter", FakeWriter)
