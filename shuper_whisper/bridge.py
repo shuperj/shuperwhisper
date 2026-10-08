@@ -145,19 +145,12 @@ class WindowAPI:
         Returns {success, config, loading?} or {success: False, error, config?}.
         """
         from . import audio_devices
-        from .config import AppConfig, load_config, save_config
+        from .config import _CONFIG_FIELDS, AppConfig, load_config, save_config
 
         try:
             current = load_config()
             merged = {**current.to_dict(), **(data or {})}
-            config = AppConfig(
-                hotkey=merged.get('hotkey', 'ctrl+shift+space'),
-                model_size=merged.get('model_size', 'auto'),
-                input_device=merged.get('input_device'),
-                language=merged.get('language', 'en'),
-                compute=merged.get('compute', 'auto'),
-                live_typing=merged.get('live_typing', 'auto'),
-            )
+            config = AppConfig(**{k: merged[k] for k in _CONFIG_FIELDS if k in merged})
             config.validate()
             if config.input_device != current.input_device:
                 problem = audio_devices.check(config.input_device)
@@ -173,7 +166,8 @@ class WindowAPI:
                 return {'success': False, 'error': 'Finish dictating first, then try again.'}
             # Decide by what's running, not by what's on disk.
             wanted = (config.model_size, config.compute, config.live_typing)
-            if wanted != app.transcriber.requested or not app.transcriber.loaded:
+            if (wanted != app.transcriber.requested or not app.transcriber.loaded
+                    or app.transcriber.needs_reload_for(config.language)):
                 app.reload_in_background(config, on_done=lambda ok: save_config(app.config))
                 return {'success': True, 'loading': True, 'config': config.to_dict()}
             if not app.reload_config(config):

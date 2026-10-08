@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { Cpu, Globe, Power } from "lucide-react";
+import { Cpu, Globe, Hand, Power } from "lucide-react";
 import { useSettings } from "@/hooks/useSettings";
+import type { AppConfig } from "@/lib/types";
 import { useTraining } from "@/hooks/useTraining";
 import { getAutostart, setAutostart } from "@/lib/bridge";
 import { Card, Section, Select, Toggle } from "@/components/fluent";
@@ -65,6 +66,26 @@ export default function App() {
             disabled={busy}
             onChange={(h) => apply({ hotkey: h })}
           />
+          <Card
+            icon={Hand}
+            title="How the shortcut works"
+            description={
+              config.shortcut === "double"
+                ? "Hold it to talk, or double-tap to start and tap once to stop. A single tap does nothing."
+                : "Hold it to talk, or tap to start and tap again to stop."
+            }
+            error={errors.shortcut}
+          >
+            <Select
+              value={config.shortcut}
+              disabled={busy}
+              onChange={(v) => apply({ shortcut: v as AppConfig["shortcut"] })}
+              options={[
+                { value: "tap", label: "Tap or hold" },
+                { value: "double", label: "Double-tap or hold" },
+              ]}
+            />
+          </Card>
           <MicrophoneCard
             device={config.input_device}
             devices={devices}

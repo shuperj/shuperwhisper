@@ -59,8 +59,9 @@ class FakeTranscriber:
 
 
 class FakeHotkeys:
-    def __init__(self, hotkey_str, on_start, on_stop):
+    def __init__(self, hotkey_str, on_start, on_stop, on_cancel=None, mode="tap"):
         self.hotkey = hotkey_str
+        self.mode = mode
         self.registered = False
         self.resets = 0
 
@@ -347,6 +348,35 @@ def test_type_on_stop_silence_writes_nothing(make_app):
     a._on_record_start()
     a._on_record_stop()
     assert a.writer.updates == [] and a.states[-1] == "idle"
+
+
+def test_cancel_takes_back_live_words(make_app):
+    a = make_app()
+    a.start()
+    FakeSession.script = [Hypothesis("", "hello", False)]
+    a._on_record_start()
+    a._on_record_cancel()                       # a lone tap in double-tap mode
+    assert a.writer.updates == [("", "hello", False), ("", "", True)]
+    assert a.states[-1] == "idle" and not a.busy
+
+
+def test_cancel_type_on_stop_types_nothing(make_app):
+    a = make_app()
+    a.start()
+    a.transcriber.live = False
+    a.transcriber.text = "hello"
+    a._on_record_start()
+    a._on_record_cancel()
+    assert a.writer.updates == [("", "", True)]  # clearing an empty tail types nothing
+    assert a.states[-1] == "idle" and not a.busy
+
+
+def test_shortcut_mode_applies_without_reregistering(make_app):
+    a = make_app()
+    a.start()
+    keys = a.hotkey_manager
+    assert a.reload_config(AppConfig(shortcut="double"))
+    assert a.hotkey_manager is keys and keys.mode == "double" and a.config.shortcut == "double"
 
 
 def test_is_silent_uses_loudest_window():

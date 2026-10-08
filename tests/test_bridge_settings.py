@@ -18,6 +18,7 @@ def api(tmp_path, monkeypatch):
     app.transcriber.model_size = "large-v3-turbo"
     app.transcriber.requested = ("auto", "auto", "auto")
     app.transcriber.loaded = True
+    app.transcriber.needs_reload_for.return_value = False
     app.config = AppConfig()
     app.reload_config.return_value = True
     a = WindowAPI()
@@ -152,3 +153,14 @@ def test_concurrent_mic_tests_leave_one_stream(api, monkeypatch):
     for t in threads:
         t.join()
     assert len(opened) == 2 and sum(not r.stopped for r in opened) == 1
+
+
+def test_new_settings_reach_the_app(api):
+    assert api.save_config({"shortcut": "double", "efficiency": "off"})["success"]
+    applied = api._app.reload_config.call_args[0][0]
+    assert applied.shortcut == "double" and applied.efficiency == "off"
+
+
+def test_language_needing_another_model_loads_in_background(api):
+    api._app.transcriber.needs_reload_for.return_value = True
+    assert api.save_config({"language": "de"}).get("loading")

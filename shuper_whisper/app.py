@@ -50,6 +50,8 @@ class _Dictation:
     def __init__(self):
         self.session: Optional[StreamingSession] = None
         self.stopping = False
+        self.cancelled = False  # a lone tap in double-tap mode: type nothing
+        self.cleared = False
         self.field = None  # where the indicator was placed
 
 
@@ -96,7 +98,8 @@ class ShuperWhisperApp:
         self._set_state(STATE_ERROR, message)
 
     def _make_hotkeys(self, hotkey: str) -> HotkeyManager:
-        return HotkeyManager(hotkey, on_start=self._on_record_start, on_stop=self._on_record_stop)
+        return HotkeyManager(hotkey, on_start=self._on_record_start, on_stop=self._on_record_stop,
+                             on_cancel=self._on_record_cancel, mode=self.config.shortcut)
 
     def _run_async(self, fn, *args) -> None:
         threading.Thread(target=fn, args=args, daemon=True).start()
@@ -164,6 +167,11 @@ class ShuperWhisperApp:
     def _on_hypothesis(self, hypothesis: Hypothesis, token: "_Dictation") -> None:
         if token is not self._current or self._session_error:
             return
+        if token.cancelled:
+            if not token.cleared:  # take back the tentative words already typed
+                token.cleared = True
+                self.writer.update("", "", final=True)
+            return
         try:
             self.writer.update(hypothesis.stable_delta, hypothesis.tentative,
                                final=hypothesis.final)
@@ -189,6 +197,16 @@ class ShuperWhisperApp:
         else:
             self._run_async(self._finish_batch, current)
 
+    def _on_record_cancel(self) -> None:
+        """End the current dictation without typing anything (a lone tap
+        in double-tap mode)."""
+        with self._token_lock:
+            current = self._current
+            if current is None or current.stopping:
+                return
+            current.cancelled = True
+        self._on_record_stop(current)
+
     def _auto_stop(self, token: "_Dictation") -> None:
         self.hotkey_manager.reset()
         self._on_record_stop(token)
@@ -198,7 +216,7 @@ class ShuperWhisperApp:
         error = None
         try:
             audio = self.recorder.stop_recording()
-            if not self.recorder.stream_error and not is_silent(audio):
+            if not token.cancelled and not self.recorder.stream_error and not is_silent(audio):
                 text = self.transcriber.transcribe(
                     audio,
                     initial_prompt=self.dictionary.get_initial_prompt() or None,
@@ -223,6 +241,9 @@ class ShuperWhisperApp:
                 self.recorder.stop_recording()
             except Exception as e:
                 error = error or str(e)
+            if token.cancelled and not token.cleared:
+                token.cleared = True
+                self.writer.update("", "", final=True)
             self.writer.finish()
             error = error or self._session_error or self.recorder.stream_error
             if error:
@@ -384,6 +405,10 @@ class ShuperWhisperApp:
                 applied.hotkey = new_config.hotkey
             except Exception as e:
                 problems.append(str(e))
+
+        self.hotkey_manager.mode = new_config.shortcut
+        applied.shortcut = new_config.shortcut
+        applied.efficiency = new_config.efficiency
 
         self.config = applied
         self.reload_error = "; ".join(problems) or None

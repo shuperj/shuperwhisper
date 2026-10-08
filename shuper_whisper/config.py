@@ -72,6 +72,12 @@ SUPPORTED_LANGUAGES = {
 VALID_COMPUTE = ("auto", "cpu")
 # "auto": type live as you speak on a GPU, all at once when you stop on CPU.
 VALID_LIVE_TYPING = ("auto", "on", "off")
+# The shortcut's gestures (hotkey.py): hold to talk either way; a quick tap
+# toggles ("tap") or needs a second tap to stay on ("double").
+VALID_SHORTCUT = ("tap", "double")
+# Efficiency mode: run on the processor and free the graphics card. "auto"
+# while another program is using the GPU heavily (gpu_monitor.py).
+VALID_EFFICIENCY = ("auto", "on", "off")
 
 
 def _validate_device(value: object) -> object:
@@ -104,6 +110,8 @@ class AppConfig:
     language: str = "en"
     compute: str = "auto"
     live_typing: str = "auto"
+    shortcut: str = "tap"
+    efficiency: str = "auto"
 
     # The sizes worth offering, by benchmarks/results/*-full.md: medium and
     # large-v3 are bigger than large-v3-turbo without being better for this.
@@ -120,13 +128,18 @@ class AppConfig:
             self.compute = "auto"
         if self.live_typing not in VALID_LIVE_TYPING:
             self.live_typing = "auto"
+        if self.shortcut not in VALID_SHORTCUT:
+            self.shortcut = "tap"
+        if self.efficiency not in VALID_EFFICIENCY:
+            self.efficiency = "auto"
         self.input_device = _validate_device(self.input_device)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-_CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "compute", "live_typing"]
+_CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "compute", "live_typing",
+                  "shortcut", "efficiency"]
 
 
 def load_config(path: str | None = None) -> AppConfig:

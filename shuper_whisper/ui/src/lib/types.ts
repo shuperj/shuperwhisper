@@ -10,6 +10,8 @@ export interface AppConfig {
   language: string;
   compute: "auto" | "cpu";
   live_typing: "auto" | "on" | "off";
+  shortcut: "tap" | "double";
+  efficiency: "auto" | "on" | "off";
 }
 
 export interface ConfigOptions {

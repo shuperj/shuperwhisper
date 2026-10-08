@@ -52,22 +52,84 @@ class FakeUser32:
         return 0
 
 
-class TestToggle:
-    def test_first_press_starts_second_stops(self):
-        calls = []
-        hm = HotkeyManager("f9", lambda: calls.append("start"), lambda: calls.append("stop"))
-        hm._on_trigger_press()
-        assert hm.active
-        hm._on_trigger_press()
-        assert calls == ["start", "stop"] and not hm.active
+class Keyboard:
+    """A fake trigger key and clock for driving the gestures."""
+
+    def __init__(self, mode="tap"):
+        self.t = 0.0
+        self.down = False
+        self.calls = []
+        self.hm = HotkeyManager("f9", lambda: self.calls.append("start"), lambda: self.calls.append("stop"),
+                                on_cancel=lambda: self.calls.append("cancel"), mode=mode,
+                                key_down=lambda vk: self.down, clock=lambda: self.t)
+
+    def press(self):
+        self.down = True
+        self.hm._on_trigger_press()
+
+    def release_after(self, seconds):
+        self.t += seconds
+        self.down = False
+        self.hm._poll()
+
+    def wait(self, seconds):
+        self.t += seconds
+        self.hm._poll()
+
+
+class TestTapMode:
+    def test_tap_starts_and_the_next_tap_stops(self):
+        k = Keyboard("tap")
+        k.press()
+        k.release_after(0.15)
+        k.wait(5.0)
+        assert k.calls == ["start"] and k.hm.active
+        k.press()
+        k.release_after(0.1)
+        assert k.calls == ["start", "stop"] and not k.hm.active
+
+    def test_hold_is_push_to_talk(self):
+        k = Keyboard("tap")
+        k.press()
+        assert k.calls == ["start"]        # starts on key-down: no words lost
+        k.wait(1.0)                        # still held: keeps going
+        k.release_after(1.0)
+        assert k.calls == ["start", "stop"] and not k.hm.active
 
     def test_reset_makes_next_press_start(self):
-        calls = []
-        hm = HotkeyManager("f9", lambda: calls.append("start"), lambda: calls.append("stop"))
-        hm._on_trigger_press()
-        hm.reset()
-        hm._on_trigger_press()
-        assert calls == ["start", "start"]
+        k = Keyboard("tap")
+        k.press()
+        k.release_after(0.1)
+        k.hm.reset()                       # e.g. auto-stop after silence
+        k.press()
+        assert k.calls == ["start", "start"]
+
+
+class TestDoubleTapMode:
+    def test_double_tap_locks_on_and_a_tap_stops(self):
+        k = Keyboard("double")
+        k.press()
+        k.release_after(0.1)
+        k.wait(0.15)
+        k.press()                          # second tap in time
+        k.release_after(0.1)
+        k.wait(5.0)
+        assert k.calls == ["start"] and k.hm.active
+        k.press()
+        assert k.calls == ["start", "stop"]
+
+    def test_a_lone_tap_cancels(self):
+        k = Keyboard("double")
+        k.press()
+        k.release_after(0.1)
+        k.wait(0.5)
+        assert k.calls == ["start", "cancel"] and not k.hm.active
+
+    def test_hold_is_push_to_talk(self):
+        k = Keyboard("double")
+        k.press()
+        k.release_after(0.8)
+        assert k.calls == ["start", "stop"]
 
 
 class TestRegister:
