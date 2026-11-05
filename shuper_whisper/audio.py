@@ -31,6 +31,10 @@ class AudioRecorder:
         self._recording = False
         self._stopping = False
         self._chunks: list[np.ndarray] = []
+        # "Save dictations for testing": a copy of everything, since live
+        # typing hands _chunks over as it goes (read_new).
+        self.keep_all = False
+        self._all: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._levels: list[float] = []
         self._level_lock = threading.Lock()
@@ -54,7 +58,10 @@ class AudioRecorder:
         if len(mono):
             with self._lock:
                 if self._recording:
-                    self._chunks.append(mono.copy())
+                    chunk = mono.copy()
+                    self._chunks.append(chunk)
+                    if self.keep_all:
+                        self._all.append(chunk)
 
     def _on_finished(self) -> None:
         if self._recording and not self._stopping:
@@ -88,6 +95,7 @@ class AudioRecorder:
         """Open the configured device and start capturing. Raises on failure."""
         with self._lock:
             self._chunks = []
+            self._all = []
         with self._level_lock:
             self._levels.clear()
         self.stream_error = None
@@ -129,11 +137,20 @@ class AudioRecorder:
                 tail = self._resampler.resample_chunk(np.zeros(0, np.float32), last=True)
                 if len(tail):
                     self._chunks.append(tail)
+                    if self.keep_all:
+                        self._all.append(tail)
             chunks, self._chunks = self._chunks, []
         self._resampler = None
         if not chunks:
             return None
         return np.concatenate(chunks).astype(np.float32)
+
+    def recording(self) -> Optional[np.ndarray]:
+        """Everything the last recording captured, with ``keep_all`` on
+        (None otherwise, or if nothing was captured)."""
+        with self._lock:
+            chunks = list(self._all)
+        return np.concatenate(chunks).astype(np.float32) if chunks else None
 
     def read_new(self) -> np.ndarray:
         """16 kHz audio captured since the previous call (for live decoding).

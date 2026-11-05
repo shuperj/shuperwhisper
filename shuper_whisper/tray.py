@@ -196,6 +196,17 @@ class TrayController:
         window.events.shown += _style
         window.events.closed += api.stop_mic_test
 
+    def _toggle_save_dictations(self, icon, item) -> None:
+        self.app.set_save_dictations(not self.app.config.save_dictations)
+
+    def _flag_last_dictation(self, icon, item) -> None:
+        cid = self.app.flag_last_dictation()
+        try:
+            icon.notify("Marked as wrong. It's kept for testing ShuperWhisper." if cid
+                        else "No saved dictation yet.", "ShuperWhisper")
+        except Exception:
+            pass
+
     def _toggle_autostart(self, icon, item) -> None:
         new_state = autostart.toggle()
         print(f"[tray] Autostart {'enabled' if new_state else 'disabled'}", flush=True)
@@ -230,6 +241,16 @@ class TrayController:
                 self._efficiency_item("on", "On"),
                 self._efficiency_item("off", "Off"),
             )),
+            pystray.MenuItem(
+                "Save dictations for testing",
+                self._toggle_save_dictations,
+                checked=lambda item: self.app.config.save_dictations,
+            ),
+            pystray.MenuItem(
+                "Last dictation was wrong",
+                self._flag_last_dictation,
+                enabled=lambda item: self.app.config.save_dictations,
+            ),
             pystray.MenuItem(
                 "Start with Windows",
                 self._toggle_autostart,

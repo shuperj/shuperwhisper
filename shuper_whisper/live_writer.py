@@ -134,6 +134,11 @@ class LiveWriter:
             self._monitor.clear()
 
     @property
+    def typed(self) -> str:
+        """What this dictation has typed into the current field."""
+        return self._committed + self._tail
+
+    @property
     def field(self):
         """Identity of the field currently being typed into."""
         return self._field

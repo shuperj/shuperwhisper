@@ -136,6 +136,27 @@ class TestCapture:
         streams[0].feed(sine(48000, 0.3))
         assert len(r.read_new()) > 0
 
+    def test_keep_all_holds_audio_that_read_new_handed_over(self, device_info):
+        streams = []
+        r = make(streams)
+        r.keep_all = True
+        r.start_recording()
+        streams[0].feed(sine(48000, 0.3))
+        handed = r.read_new()
+        streams[0].feed(sine(48000, 0.3))
+        rest = r.stop_recording()
+        assert len(r.recording()) == len(handed) + len(rest)
+        r.start_recording()  # a new dictation starts empty
+        assert r.recording() is None
+
+    def test_no_copy_without_keep_all(self, device_info):
+        streams = []
+        r = make(streams)
+        r.start_recording()
+        streams[0].feed(sine(48000, 0.3))
+        r.stop_recording()
+        assert r.recording() is None
+
     def test_open_failure_rescans_and_retries(self, device_info, monkeypatch):
         from shuper_whisper import audio_devices
         monkeypatch.setattr(audio_devices, "refresh", lambda: True)
