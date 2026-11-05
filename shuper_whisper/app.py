@@ -77,6 +77,9 @@ class ShuperWhisperApp:
         self._token_lock = threading.Lock()
         self._current: Optional[_Dictation] = None
         self._session_error: Optional[str] = None
+        # The last finished dictation (audio, details, saved id), in memory
+        # only, so "Last dictation was wrong" can keep it after the fact.
+        self._last_dictation: Optional[dict] = None
 
         # Efficiency mode: dictation on the processor, graphics card freed.
         self._gpu_busy = False      # another program is using the GPU heavily
@@ -184,7 +187,7 @@ class ShuperWhisperApp:
             return
         token = _Dictation()
         try:
-            self.recorder.keep_all = self.config.save_dictations
+            self.recorder.keep_all = True  # for "Last dictation was wrong"
             self.recorder.start_recording()
         except Exception as e:
             self._session_lock.release()
@@ -304,8 +307,10 @@ class ShuperWhisperApp:
                 self.writer.update("", "", final=True)
             self.writer.finish()
             error = error or self._session_error or self.recorder.stream_error
-            if self.config.save_dictations and not token.cancelled and not error:
-                self._save_capture(token)
+            if token.cancelled or error:
+                self._last_dictation = None
+            else:
+                self._keep_last(token)
             if error:
                 self._fail(error)
                 self.overlay.show_error(error)
@@ -315,13 +320,15 @@ class ShuperWhisperApp:
         finally:
             self._session_lock.release()
 
-    def _save_capture(self, token: "_Dictation") -> None:
-        """"Save dictations for testing": keep this one's audio and text."""
+    def _keep_last(self, token: "_Dictation") -> None:
+        """Hold this dictation in memory for "Last dictation was wrong", and
+        write it to disk now with "Save dictations for testing" on."""
+        self._last_dictation = None
         try:
             audio = self.recorder.recording()
             if is_silent(audio):
                 return
-            captures.save(audio, {
+            meta = {
                 "mode": "live" if token.session else "stop",
                 "device": self.transcriber.device,
                 "model": self.transcriber.model_size,
@@ -329,9 +336,30 @@ class ShuperWhisperApp:
                 "replacements": self.dictionary.get_replacements(),
                 "typed": getattr(self.writer, "typed", ""),
                 "trace": token.trace,
-            })
+            }
+            cid = captures.save(audio, meta) if self.config.save_dictations else None
+            self._last_dictation = {"audio": audio, "meta": meta, "id": cid}
+        except Exception as e:
+            print(f"[app] couldn't keep the dictation: {e}", flush=True)
+
+    def flag_last_dictation(self) -> Optional[str]:
+        """The tray's "Last dictation was wrong": save the last dictation,
+        flagged, whether or not saving was on. Returns its id."""
+        last = self._last_dictation
+        if last is None:
+            return None
+        try:
+            if last["id"] is not None:
+                try:
+                    captures.set_flag(last["id"], True)
+                    return last["id"]
+                except OSError:
+                    pass  # the saved copy is gone (pruned): save it again
+            last["id"] = captures.save(last["audio"], {**last["meta"], "flagged": True})
+            return last["id"]
         except Exception as e:
             print(f"[app] couldn't save the dictation: {e}", flush=True)
+            return None
 
     def set_save_dictations(self, on: bool) -> None:
         """The tray's "Save dictations for testing"."""
@@ -340,11 +368,6 @@ class ShuperWhisperApp:
             save_config(self.config)
         except OSError as e:
             print(f"[app] couldn't save settings: {e}", flush=True)
-
-    @staticmethod
-    def flag_last_dictation() -> Optional[str]:
-        """The tray's "Last dictation was wrong": flag the newest saved one."""
-        return captures.flag_last()
 
     # Type-on-stop has no VAD running, so the level loop provides its auto-stop.
     QUIET_LEVEL = 0.01

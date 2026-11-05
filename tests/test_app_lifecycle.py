@@ -593,6 +593,44 @@ def test_flag_last_dictation(make_app, capture_dir):
     assert app_mod.captures.load(cid, str(capture_dir))["flagged"] is True
 
 
+def test_last_dictation_can_be_flagged_with_saving_off(make_app, capture_dir):
+    a = make_app()
+    a.start()
+    assert a.flag_last_dictation() is None          # nothing dictated yet
+    a.transcriber.live = False
+    a.transcriber.text = "hello world"
+    a._on_record_start()
+    a._on_record_stop()
+    assert not capture_dir.exists()                 # kept in memory only
+    cid = a.flag_last_dictation()
+    [meta] = app_mod.captures.all_meta(str(capture_dir))
+    assert meta["id"] == cid and meta["flagged"] is True and meta["mode"] == "stop"
+    assert a.flag_last_dictation() == cid           # flagging again doesn't save a copy
+    assert len(app_mod.captures.all_meta(str(capture_dir))) == 1
+
+
+def test_flag_marks_the_saved_copy_when_saving_is_on(make_app, capture_dir):
+    a = make_app(save_dictations=True)
+    a.start()
+    a.transcriber.live = False
+    a._on_record_start()
+    a._on_record_stop()
+    cid = a.flag_last_dictation()
+    [meta] = app_mod.captures.all_meta(str(capture_dir))
+    assert meta["id"] == cid and meta["flagged"] is True
+
+
+def test_cancelled_dictation_is_not_kept_for_flagging(make_app, capture_dir):
+    a = make_app()
+    a.start()
+    a.transcriber.live = False
+    a._on_record_start()
+    a._on_record_stop()
+    a._on_record_start()
+    a._on_record_cancel()                           # the last one was cancelled: nothing to flag
+    assert a.flag_last_dictation() is None and not capture_dir.exists()
+
+
 def test_save_dictations_setting_survives_a_settings_change(make_app, monkeypatch):
     saved = []
     monkeypatch.setattr(app_mod, "save_config", lambda c: saved.append(c.save_dictations))

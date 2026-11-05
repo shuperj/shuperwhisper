@@ -202,8 +202,8 @@ class TrayController:
     def _flag_last_dictation(self, icon, item) -> None:
         cid = self.app.flag_last_dictation()
         try:
-            icon.notify("Marked as wrong. It's kept for testing ShuperWhisper." if cid
-                        else "No saved dictation yet.", "ShuperWhisper")
+            icon.notify("Saved for testing. Label it with benchmarks/label_captures.py." if cid
+                        else "There's no dictation to save yet.", "ShuperWhisper")
         except Exception:
             pass
 
@@ -248,8 +248,7 @@ class TrayController:
             ),
             pystray.MenuItem(
                 "Last dictation was wrong",
-                self._flag_last_dictation,
-                enabled=lambda item: self.app.config.save_dictations,
+                self._flag_last_dictation,  # always enabled: Windows caches the menu
             ),
             pystray.MenuItem(
                 "Start with Windows",
