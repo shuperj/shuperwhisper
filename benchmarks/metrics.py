@@ -22,15 +22,76 @@ def words(text: str) -> list[str]:
     return out
 
 
+def word_ops(expected: str, got: str) -> list[tuple[str, str, str]]:
+    """Word alignment: ("=", ref, hyp), ("~", ref, hyp) substituted,
+    ("-", ref, "") deleted or ("+", "", hyp) inserted, in order."""
+    ref, hyp = words(expected), words(got)
+    n, m = len(ref), len(hyp)
+    d = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(n + 1):
+        d[i][0] = i
+    for j in range(m + 1):
+        d[0][j] = j
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (ref[i - 1] != hyp[j - 1]))
+    ops = []
+    i, j = n, m
+    # Among equally short alignments prefer a match, then an insertion or
+    # deletion, then a substitution: "over Monday. I'm going" lines Monday
+    # up with Monday rather than with the last invented word.
+    while i or j:
+        if i and j and ref[i - 1] == hyp[j - 1] and d[i][j] == d[i - 1][j - 1]:
+            ops.append(("=", ref[i - 1], hyp[j - 1]))
+            i, j = i - 1, j - 1
+        elif j and d[i][j] == d[i][j - 1] + 1:
+            ops.append(("+", "", hyp[j - 1]))
+            j -= 1
+        elif i and d[i][j] == d[i - 1][j] + 1:
+            ops.append(("-", ref[i - 1], ""))
+            i -= 1
+        else:
+            ops.append(("~", ref[i - 1], hyp[j - 1]))
+            i, j = i - 1, j - 1
+    return ops[::-1]
+
+
 def wer(expected: str, got: str) -> tuple[int, int]:
     """(word errors, expected word count): substitutions + deletions + insertions."""
-    ref, hyp = words(expected), words(got)
-    d = list(range(len(hyp) + 1))
-    for i, r in enumerate(ref, 1):
-        prev, d[0] = d[0], i
-        for j, h in enumerate(hyp, 1):
-            prev, d[j] = d[j], min(d[j] + 1, d[j - 1] + 1, prev + (r != h))
-    return d[len(hyp)], len(ref)
+    ops = word_ops(expected, got)
+    return sum(op != "=" for op, _r, _h in ops), sum(op != "+" for op, _r, _h in ops)
+
+
+def invented(expected: str, got: str, dictionary: str = "") -> list[str]:
+    """Words typed that weren't said.
+
+    Each run of errors between matching words is a block. A block whose
+    typed letters spell what was said ("voice meter" for "Voicemeeter",
+    "pi web view" for "pywebview") is a spelling, not an invention. Otherwise
+    its extra words are invented, and so is any dictionary word typed in
+    place of a word that wasn't it ("try gitea the whole thing" for
+    "moving"). ``dictionary`` is the hotwords string ("a, b, c").
+    """
+    dict_words = {w for entry in dictionary.split(",") for w in words(entry)}
+    out, block = [], []
+    for op in word_ops(expected, got) + [("=", "", "")]:
+        if op[0] != "=":
+            block.append(op)
+            continue
+        if block:
+            refs = [r for _o, r, _h in block if r]
+            hyps = [h for _o, _r, h in block if h]
+            a, b = "".join(refs), "".join(hyps)
+            if not (a and b and difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.75):
+                extra = len(hyps) - len(refs)
+                # the extra words: those least like anything said
+                ranked = sorted(hyps, key=lambda h: max(
+                    (difflib.SequenceMatcher(None, h, r).ratio() for r in refs), default=0.0))
+                picked = ranked[:max(extra, 0)]
+                picked += [h for h in hyps if h in dict_words and h not in refs and h not in picked]
+                out += [h for h in hyps if h in picked]
+        block = []
+    return out
 
 
 def _tokens(text: str) -> list[tuple[str, bool]]:

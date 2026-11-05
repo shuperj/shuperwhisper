@@ -85,6 +85,19 @@ def strip_hint_echo(words: list, hint: Optional[str]) -> list:
     return [w for j, w in enumerate(words) if j not in drop]
 
 
+def transcribe_once(transcriber, audio: np.ndarray, hotwords: Optional[str] = None) -> str:
+    """Type-on-stop: one accurate pass over the whole recording.
+
+    The dictionary goes in as hotwords only: given a "Vocabulary:" prompt
+    as well, Base types the list back on near-silence. Shared by the app
+    and the benchmark, so the benchmark scores exactly what gets typed.
+    """
+    text = transcriber.transcribe(audio, hotwords=hotwords)
+    words = text.split()
+    kept = strip_hint_echo(words, hotwords)
+    return " ".join(kept) if len(kept) != len(words) else text
+
+
 def _sentence_end(word: str) -> str:
     """Trailing sentence punctuation of ``word`` ("" if none)."""
     return word[len(word.rstrip(_SENTENCE_END)):]
