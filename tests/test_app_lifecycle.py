@@ -558,7 +558,7 @@ def test_type_on_stop_dictation_is_saved_when_asked(make_app, capture_dir):
     a._on_record_start()
     a._on_record_stop()
     [meta] = app_mod.captures.all_meta(str(capture_dir))
-    assert meta["mode"] == "stop" and meta["hotwords"] == "gitea" and meta["seconds"] == 1.0
+    assert meta["mode"] == "stop" and meta["hotwords"] == "gitea." and meta["seconds"] == 1.0
     assert meta["trace"][-1][1:] == ["hello world", "", True]
 
 

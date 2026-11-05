@@ -153,9 +153,7 @@ class TestTranscriberIntegration:
     def test_hotwords_simple(self, dictionary):
         dictionary.add("kubectl")
         dictionary.add("pytest")
-        hw = dictionary.get_hotwords()
-        assert "kubectl" in hw
-        assert "pytest" in hw
+        assert dictionary.get_hotwords() == "kubectl, pytest."  # a sentence, not a bare list
 
 
 class TestDictionaryEntry:

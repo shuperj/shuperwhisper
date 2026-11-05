@@ -89,10 +89,17 @@ class WordDictionary:
         return list(self._entries)
 
     def get_hotwords(self) -> str:
-        """Build a hotwords string for faster-whisper."""
+        """Build a hotwords string for faster-whisper: "a, b, c."
+
+        faster-whisper puts it before the prompt, and Whisper copies the
+        prompt's style. As a bare lowercase list it wrote unpunctuated text
+        that ran on into the silence after speech ("...since and I'll see you
+        in the next one"); ended as a sentence it doesn't (benchmarks/results/
+        2026-11-05-*-dict-period.md).
+        """
         if not self._entries:
             return ""
-        return ", ".join(entry.word for entry in self._entries)
+        return ", ".join(entry.word for entry in self._entries) + "."
 
     def get_replacements(self) -> list[tuple[str, str]]:
         """(heard, word) pairs: a phonetic hint is what Whisper hears for the word."""
