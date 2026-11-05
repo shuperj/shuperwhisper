@@ -79,7 +79,7 @@ class ShuperWhisperApp:
         # Efficiency mode: dictation on the processor, graphics card freed.
         self._gpu_busy = False      # another program is using the GPU heavily
         self._gpu_reason = ""
-        self.efficient = self._efficient_for(config.efficiency)
+        self.efficient = self._efficient_for(config)
         self.gpu_monitor = GpuMonitor(on_change=self._on_gpu_busy)
 
         self.recorder = AudioRecorder(device_ref=config.input_device)
@@ -91,13 +91,17 @@ class ShuperWhisperApp:
 
     # -- efficiency mode ---------------------------------------------------------
 
-    def _efficient_for(self, setting: str) -> bool:
-        return setting == "on" or (setting == "auto" and self._gpu_busy)
+    def _efficient_for(self, config: AppConfig) -> bool:
+        """Efficiency "on" always; "auto" while the GPU is busy, except under
+        "Always live", which keeps dictation on the graphics card."""
+        if config.efficiency == "on":
+            return True
+        return config.efficiency == "auto" and config.live_typing != "on" and self._gpu_busy
 
     def model_wanted(self, config: AppConfig) -> tuple[str, str, str]:
         """(model size, compute, live typing) to run for ``config``: in
         efficiency mode the processor, whatever the setting says."""
-        compute = "cpu" if self._efficient_for(config.efficiency) else config.compute
+        compute = "cpu" if self._efficient_for(config) else config.compute
         return config.model_size, compute, config.live_typing
 
     @staticmethod
@@ -121,7 +125,7 @@ class ShuperWhisperApp:
         """The GPU monitor's verdict changed."""
         self._gpu_busy, self._gpu_reason = busy, reason
         print(f"[gpu] {'busy: ' + reason if busy else 'free again'}", flush=True)
-        if self.config.efficiency == "auto" and self._running:
+        if self.config.efficiency == "auto" and self.config.live_typing != "on" and self._running:
             # waits out a dictation: never switches mid-sentence
             self._run_async(self.reload_config, self.config, False, 600.0)
 
@@ -438,7 +442,7 @@ class ShuperWhisperApp:
             self.recorder = AudioRecorder(device_ref=new_config.input_device)
         applied.input_device = new_config.input_device
 
-        efficient = self._efficient_for(new_config.efficiency)
+        efficient = self._efficient_for(new_config)
         wanted = self.model_wanted(new_config)
         if (force_model or wanted != self.transcriber.requested or not self.transcriber.loaded
                 or self.transcriber.needs_reload_for(new_config.language)):

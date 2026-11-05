@@ -218,7 +218,11 @@ class TrayController:
 
     def _build_menu(self) -> pystray.Menu:
         def _efficiency_title(item) -> str:
-            return f"Efficiency mode: {'on' if self.app.efficient else 'off'}"
+            if self.app.efficient:
+                return "Efficiency mode: on"
+            if self.app.config.efficiency == "auto" and self.app.config.live_typing == "on":
+                return "Efficiency mode: off (Always live)"
+            return "Efficiency mode: off"
         return pystray.Menu(
             pystray.MenuItem("Settings...", self._open_settings),
             pystray.MenuItem(_efficiency_title, pystray.Menu(

@@ -487,6 +487,29 @@ def test_efficiency_off_ignores_a_busy_gpu(make_app):
     assert not a.efficient and a.transcriber.requested[1] == "auto"
 
 
+def test_always_live_keeps_the_gpu_while_a_game_runs(make_app):
+    a = make_app(live_typing="on")
+    a.start()
+    a.gpu_monitor.on_change(True, "game.exe")
+    assert not a.efficient and a.transcriber.requested[1] == "auto"
+    assert a.efficiency_reason == ""
+
+
+def test_efficiency_on_still_wins_over_always_live(make_app):
+    a = make_app(live_typing="on", efficiency="on")
+    a.start()
+    assert a.efficient and a.transcriber.requested[1] == "cpu"
+
+
+def test_switching_to_always_live_leaves_efficiency_mode(make_app):
+    a = make_app()
+    a.start()
+    a.gpu_monitor.on_change(True, "game.exe")
+    assert a.efficient
+    a._apply_config(AppConfig(**{**a.config.to_dict(), "live_typing": "on"}))
+    assert not a.efficient and a.transcriber.requested == ("auto", "auto", "on")
+
+
 def test_efficiency_on_starts_on_the_processor(make_app):
     a = make_app(efficiency="on")
     assert a.transcriber.requested[1] == "cpu"

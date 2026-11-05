@@ -130,7 +130,7 @@ export function ProcessingSection({
       <Card
         icon={Type}
         title="Live typing"
-        description="Automatic types as you speak with GPU acceleration, and all at once when you stop on the processor."
+        description="Automatic types as you speak with GPU acceleration, and all at once when you stop on the processor. Always live also keeps dictation on the graphics card while a game runs."
         error={errors.live_typing}
       >
         <Select
