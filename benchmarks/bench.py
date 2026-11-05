@@ -30,12 +30,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 sys.path.insert(0, HERE)
 
-from corpus import SR, _read_wav, build_audio, own_audio, real_audio  # noqa: E402
-from metrics import sentence_breaks, wer  # noqa: E402
+from corpus import SR, _read_wav, build_audio, captured_audio, own_audio, real_audio  # noqa: E402
+from metrics import invented, sentence_breaks, wer  # noqa: E402
 
 DEFAULT_MODELS = ["large-v3-turbo", "distil-medium.en", "small.en", "small", "distil-small.en",
                   "base.en", "base", "tiny.en", "tiny"]
-REAL = ("sermon", "libri_clean", "libri_other", "own")  # shown per set, not per clip
+REAL = ("sermon", "libri_clean", "libri_other", "own", "captured")  # shown per set, not per clip
 WORDS_ONLY = ("libri_clean", "libri_other")  # references without punctuation
 HALLUCINATION = ("silence", "gap_clicks")     # scored as invented words, not WER
 GROUPS = [  # (column, variants)
@@ -43,6 +43,7 @@ GROUPS = [  # (column, variants)
     ("Synthetic, 10 dB noise", ("david_noisy",)),
     ("Synthetic, 3 dB noise", ("zira_noisy",)),
     ("Your voice", ("own",)),
+    ("Your dictations", ("captured",)),
     ("LibriSpeech clean", ("libri_clean",)),
     ("LibriSpeech other", ("libri_other",)),
     ("Sermons", ("sermon",)),
@@ -89,11 +90,66 @@ class _PeakGpu(threading.Thread):
         self.peak = max(self.peak, _gpu_used())
 
 
+# -- dictionary and pace -------------------------------------------------------
+
+def load_dictionary(spec: str) -> tuple:
+    """--hotwords: "none", "auto" (the dictionary the app uses: the installed
+    app's if there is one, else this checkout's) or a literal "a, b, c".
+    Returns (hotwords, replacements), as the app passes them."""
+    if spec == "none":
+        return None, []
+    if spec != "auto":
+        return spec, []
+    from shuper_whisper.dictionary import WordDictionary
+    installed = os.path.join(os.environ.get("APPDATA", ""), "ShuperWhisper", "dictionary.json")
+    d = WordDictionary(path=installed if os.path.exists(installed) else None)
+    d.load()
+    return d.get_hotwords() or None, d.get_replacements()
+
+
+# Pass times (seconds per greedy pass of 3 / 10 / 25 s of audio) that --pace
+# fixed charges, so a seed replays the same way however busy the machine is.
+# Measured on an RTX 3080 and its PC's processor (2026-11-05); a model not
+# listed uses what this run measured.
+REFERENCE_LATENCY = {
+    ("base.en", "cuda"): {"3": 0.08, "10": 0.21, "25": 0.43},
+    ("base.en", "cpu"): {"3": 0.66, "10": 0.86, "25": 1.33},
+}
+REFERENCE_LATENCY[("base", "cuda")] = REFERENCE_LATENCY[("base.en", "cuda")]
+REFERENCE_LATENCY[("base", "cpu")] = REFERENCE_LATENCY[("base.en", "cpu")]
+
+
+class FixedPace:
+    """--pace fixed: each decode costs the model's measured pass time for
+    that much audio, times a seeded jitter (and --slow, for a GPU shared
+    with a game), instead of however long it really took. The same seed
+    gives the same timing, so a failure can be replayed."""
+    BEAM5 = 2.0  # a beam-5 pass costs about this many greedy ones
+
+    def __init__(self, latency: dict, seed: int, slow: float = 1.0):
+        import random
+        self._points = sorted((float(k), v) for k, v in latency.items())
+        self._rng = random.Random(seed)
+        self._slow = slow
+
+    def cost(self, seconds: float, beam_size: int = 1) -> float:
+        pts = self._points
+        if seconds <= pts[0][0]:
+            base = pts[0][1] * max(seconds, 0.5) / pts[0][0]
+        elif seconds >= pts[-1][0]:
+            base = pts[-1][1]
+        else:
+            (x0, y0), (x1, y1) = next((a, b) for a, b in zip(pts, pts[1:]) if a[0] <= seconds <= b[0])
+            base = y0 + (y1 - y0) * (seconds - x0) / (x1 - x0)
+        return base * (self.BEAM5 if beam_size > 1 else 1) * self._slow * self._rng.uniform(0.7, 1.3)
+
+
 # -- one model -----------------------------------------------------------------
 
-def _live(transcriber, audio, interval, speech_end):
+def _live(transcriber, audio, interval, speech_end, hotwords=None, pace=None, replacements=()):
     """Run a StreamingSession + LiveWriter over ``audio`` in simulated real time.
-    ``lag``: seconds from ``speech_end`` until the field last changed."""
+    ``lag``: seconds from ``speech_end`` until the field last changed.
+    ``pace``: a FixedPace, or None to charge each step what it really took."""
     from shuper_whisper.live_writer import LiveWriter
     from shuper_whisper.streaming import StreamingSession
 
@@ -103,7 +159,7 @@ def _live(transcriber, audio, interval, speech_end):
     step = {"vt": 0.0, "real": time.perf_counter()}  # where the current step started
 
     def send(text, backspaces=0):
-        field["last_change"] = step["vt"] + time.perf_counter() - step["real"]
+        field["last_change"] = vt[0] if pace else step["vt"] + time.perf_counter() - step["real"]
         field["backspaces"] += backspaces
         if backspaces:
             field["text"] = field["text"][:-backspaces]
@@ -118,6 +174,7 @@ def _live(transcriber, audio, interval, speech_end):
         start = stop = clear = lambda self: None
 
     writer = LiveWriter(send=send, read_context=lambda: field["text"], field_id=lambda: (1, None),
+                        replacements=lambda: replacements,
                         monitor_factory=Monitor, wait_modifiers=lambda timeout=1.0: True)
     writer.begin()
 
@@ -147,14 +204,15 @@ def _live(transcriber, audio, interval, speech_end):
         transcriber, read_audio,
         on_hypothesis=lambda h: writer.update(h.stable_delta, h.tentative, final=h.final),
         on_finished=lambda error: finished.update(error=error, at=time.perf_counter()),
-        on_auto_stop=lambda: None, interval=interval, clock=lambda: vt[0])
+        on_auto_stop=lambda: None, hotwords=hotwords, interval=interval, clock=lambda: vt[0])
     session._stop = Stop()
     tick, decode = session._tick, transcriber.transcribe_words
 
     def timed_tick():
         step["vt"], step["real"] = vt[0], time.perf_counter()
         tick()
-        vt[0] += time.perf_counter() - step["real"]
+        if not pace:
+            vt[0] += time.perf_counter() - step["real"]
         step["vt"], step["real"] = vt[0], time.perf_counter()  # the final pass runs from here
 
     def timed_decode(*a, **k):
@@ -163,6 +221,8 @@ def _live(transcriber, audio, interval, speech_end):
             return decode(*a, **k)
         finally:
             passes.append(time.perf_counter() - t0)
+            if pace:  # the decode "took" this long on the session's clock
+                vt[0] += pace.cost(len(a[0]) / SR, k.get("beam_size", 1))
 
     session._tick = timed_tick
     transcriber.transcribe_words = timed_decode
@@ -176,13 +236,15 @@ def _live(transcriber, audio, interval, speech_end):
             "passes": len(passes), "pass_mean": statistics.mean(passes) if passes else 0.0}
 
 
-def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune: dict) -> dict:
+def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune: dict,
+            hotwords=None, replacements=(), repeat: int = 1, pace: str = "measured", seed: int = 0,
+            slow: float = 1.0, own_hotwords: bool = False) -> dict:
     gpu = device == "cuda"
     base = _gpu_used() if gpu else 0
     import numpy as np
 
     from shuper_whisper import transcriber as tr
-    from shuper_whisper.streaming import StreamingSession, silero_speech_spans
+    from shuper_whisper.streaming import StreamingSession, silero_speech_spans, transcribe_once
     from shuper_whisper.text_rules import clean, join
     from shuper_whisper import streaming
     for key, value in tune.items():  # "JOIN_GAP" or "LocalAgreement.HOLD_WORDS"
@@ -199,6 +261,7 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
                        compute_type=compute)
     t.load_model()
     result = {"model": model, "device": device, "compute": compute, "tune": tune,
+              "hotwords": hotwords, "pace": pace, "slow": slow, "repeat": repeat,
               "load_s": time.perf_counter() - t0}
     if gpu:
         time.sleep(0.5)
@@ -220,21 +283,30 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
     result["pass_latency"] = latency
 
     clips = []
-    for clip_id, variant, path, expected in items:
+    for clip_id, variant, path, expected, *meta in items:
         audio = _read_wav(path)
-        row = {"clip": clip_id, "variant": variant, "expected": expected, "seconds": len(audio) / SR}
+        # with --hotwords auto, a captured dictation replays with the dictionary it had
+        hot = meta[0].get("hotwords") if meta and own_hotwords else hotwords
+        reps = [tuple(r) for r in meta[0].get("replacements", [])] if meta and own_hotwords else replacements
         t1 = time.perf_counter()
-        row["batch"] = {"text": join(clean(t.transcribe(audio)), ""), "seconds": time.perf_counter() - t1}
-        if not skip_live:
-            padded = np.concatenate([audio, np.zeros(int(TRAILING_SILENCE * SR), np.float32)])
-            spans = silero_speech_spans(audio)
-            speech_end = max(0.0, spans[-1][1] / SR - 0.1) if spans else 0.0  # VAD pads 0.1 s
-            row["live"] = _live(t, padded, 0.4 if gpu else 1.0, speech_end)
-        clips.append(row)
-        score = wer(expected, row["live"]["text"] if "live" in row else row["batch"]["text"])
-        error = row.get("live", {}).get("error")
-        print(f"  {model:18} {clip_id:34} {variant:11} {score[0]}/{score[1]}"
-              + (f"  LIVE TYPING FAILED: {error}" if error else ""), flush=True)
+        batch = {"text": join(clean(transcribe_once(t, audio, hot), reps), ""), "seconds": time.perf_counter() - t1}
+        padded = np.concatenate([audio, np.zeros(int(TRAILING_SILENCE * SR), np.float32)])
+        spans = silero_speech_spans(audio)
+        speech_end = max(0.0, spans[-1][1] / SR - 0.1) if spans else 0.0  # VAD pads 0.1 s
+        for run in range(1 if skip_live else repeat):
+            row = {"clip": clip_id, "variant": variant, "expected": expected, "seconds": len(audio) / SR,
+                   "hotwords": hot, "seed": seed + run, "batch": batch}
+            if not skip_live:
+                table = REFERENCE_LATENCY.get((model, device), result["pass_latency"])
+                fixed = FixedPace(table, seed + run, slow) if pace == "fixed" else None
+                row["live"] = _live(t, padded, 0.4 if gpu else 1.0, speech_end, hot, fixed, reps)
+            clips.append(row)
+            text = row["live"]["text"] if "live" in row else batch["text"]
+            score, extra = wer(expected, text), invented(expected, text, hot or "")
+            error = row.get("live", {}).get("error")
+            print(f"  {model:18} {clip_id:34} {variant:11} s{seed + run} {score[0]}/{score[1]}"
+                  + (f"  +{' '.join(extra)}" if extra else "")
+                  + (f"  LIVE TYPING FAILED: {error}" if error else ""), flush=True)
     result["clips"] = clips
     if gpu:
         peak.stop()
@@ -254,6 +326,7 @@ def _score(rows):
             if mode in r:
                 r[mode]["wer"] = wer(r["expected"], r[mode]["text"])
                 r[mode]["breaks"] = sentence_breaks(r["expected"], r[mode]["text"])
+                r[mode]["invented"] = invented(r["expected"], r[mode]["text"], r.get("hotwords") or "")
     return rows
 
 
@@ -272,6 +345,33 @@ def _breaks(rows, variants):
 
 def _pct(value):
     return "-" if value is None else f"{value:.1f}%"
+
+
+def _invented_section(results, live) -> list[str]:
+    """Words typed that weren't said (metrics.invented), per 1000 words, then each one."""
+    res0 = results[0]
+    out = ["## Invented words", "",
+           f"Words typed that weren't said, per 1000 words said. Dictionary: "
+           f"{res0.get('hotwords') or 'none'}. Live: {res0.get('repeat', 1)} run(s) per clip, "
+           f"pace {res0.get('pace', 'measured')}" + (f" x{res0['slow']}" if res0.get("slow", 1) != 1 else "")
+           + ".", "",
+           "| Model | Type-on-stop | Live typing |", "|---|---|---|"]
+    listed = []
+    for res in results:
+        rows = [r for r in res["clips"] if r["clip"] not in HALLUCINATION]
+        cells = []
+        for mode in ("batch", "live"):
+            # type-on-stop is the same on every run: count it once per clip
+            hits = [r for r in rows if mode in r and (mode == "live" or r.get("seed", 0) == rows[0].get("seed", 0))]
+            said = sum(r[mode]["wer"][1] for r in hits)
+            n = sum(len(r[mode]["invented"]) for r in hits)
+            cells.append(f"{1000 * n / said:.1f} ({n})" if said and (mode == "batch" or live) else "-")
+            for r in hits:
+                if r[mode]["invented"]:
+                    listed.append(f"- `{res['model']}` {'live' if mode == 'live' else 'stop'} "
+                                  f"{r['clip']} (seed {r.get('seed', 0)}): +{' '.join(r[mode]['invented'])}")
+        out.append(f"| `{res['model']}` | " + " | ".join(cells) + " |")
+    return out + ([""] + listed if listed else []) + [""]
 
 
 def summarise(results: list[dict]) -> str:
@@ -302,7 +402,10 @@ def summarise(results: list[dict]) -> str:
                       f"{100 * sum(r['live']['backspaces'] for r in rows) / max(words, 1):.0f}"]
         out.append("| " + " | ".join(cells) + " |")
 
-    # 2. word error rate
+    # 2. invented words
+    out += _invented_section(results, live)
+
+    # 3. word error rate
     out += ["", "## Word error rate", "",
             "Type-on-stop -> live typing. Lower is better.", "",
             "| Model | " + " | ".join(name for name, _ in groups) + " |", "|---|" + "---|" * len(groups)]
@@ -313,7 +416,7 @@ def summarise(results: list[dict]) -> str:
             cells.append(_pct(b) + (f" -> {_pct(l)}" if live else ""))
         out.append(f"| `{res['model']}` | " + " | ".join(cells) + " |")
 
-    # 3. punctuation and invented text
+    # 4. punctuation and invented text
     if live:
         punct = [(name, vs) for name, vs in groups if not set(vs) & set(WORDS_ONLY)]
         out += ["", "## Sentence breaks and invented text (live typing)", "",
@@ -333,7 +436,7 @@ def summarise(results: list[dict]) -> str:
                 cells.append("-" if b is None else f"{b[0]} / {b[1]}")
             out.append(f"| `{res['model']}` | " + " | ".join(cells) + f" | {invented} |")
 
-        # 4. per clip
+        # 5. per clip
         clip_ids = list(dict.fromkeys(r["clip"] if r["variant"] not in REAL else r["variant"]
                                       for r in results[0]["clips"]))
         out += ["", "## Live word error rate by clip", "",
@@ -370,8 +473,17 @@ def main():
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
     parser.add_argument("--device", default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--compute", default=None, help="default: int8_float16 on GPU, int8 on CPU")
-    parser.add_argument("--set", default="all", choices=["all", "synthetic", "real", "own"],
-                        help="real = the asr-shootout clips (extract_real.py); own = your voice (record.py)")
+    parser.add_argument("--set", default="all", choices=["all", "synthetic", "real", "own", "captured"],
+                        help="real = the asr-shootout clips (extract_real.py); own = your voice (record.py); "
+                             "captured = your flagged dictations (captures.py)")
+    parser.add_argument("--hotwords", default="auto",
+                        help='the dictionary: "auto" (the one the app uses), "none", or "a, b, c"')
+    parser.add_argument("--repeat", type=int, default=1, help="live runs per clip (timing differs each run)")
+    parser.add_argument("--pace", default="measured", choices=["measured", "fixed"],
+                        help="fixed: each live pass costs the measured pass time x seeded jitter, so a seed replays")
+    parser.add_argument("--seed", type=int, default=0, help="first seed (with --repeat, seed .. seed+N-1)")
+    parser.add_argument("--slow", type=float, default=1.0,
+                        help="with --pace fixed, passes take this many times longer (a GPU shared with a game)")
     parser.add_argument("--clips", nargs="+", help="only clips whose id starts with one of these")
     parser.add_argument("--variants", nargs="+", help="only these variants (david, sermon, libri_other...)")
     parser.add_argument("--skip-live", action="store_true")
@@ -401,6 +513,8 @@ def main():
         items += real_audio(cache)
     if args.set in ("all", "own"):
         items += own_audio(cache)
+    if args.set in ("all", "captured"):
+        items += captured_audio(cache)
     if args.clips:
         items = [i for i in items if i[0].startswith(tuple(args.clips))]
     if args.variants:
@@ -408,7 +522,9 @@ def main():
 
     if args.child:
         build_audio(cache)  # the latency clip
-        result = run_one(args.child, args.device, compute, items, args.skip_live, tune)
+        result = run_one(args.child, args.device, compute, items, args.skip_live, tune,
+                         *load_dictionary(args.hotwords), repeat=args.repeat, pace=args.pace,
+                         seed=args.seed, slow=args.slow, own_hotwords=args.hotwords == "auto")
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=1)
         return
@@ -422,7 +538,9 @@ def main():
         out = os.path.join(raw_dir, f"{model}.json")
         print(f"== {model}", flush=True)
         cmd = [sys.executable, __file__, "--child", model, "--out", out, "--device", args.device,
-               "--compute", compute, "--set", args.set]
+               "--compute", compute, "--set", args.set, "--hotwords", args.hotwords,
+               "--repeat", str(args.repeat), "--pace", args.pace, "--seed", str(args.seed),
+               "--slow", str(args.slow)]
         for flag in ("clips", "variants", "tune"):
             if getattr(args, flag):
                 cmd += [f"--{flag}"] + list(getattr(args, flag))

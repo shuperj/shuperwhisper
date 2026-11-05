@@ -211,3 +211,15 @@ def real_audio(cache_dir: str) -> list[tuple[str, str, str, str]]:
     with open(manifest, encoding="utf-8") as f:
         clips = json.load(f)
     return [(c["id"], c["set"], os.path.join(folder, f"{c['id']}.wav"), c["expected"]) for c in clips]
+
+
+def captured_audio(cache_dir: str) -> list[tuple]:
+    """Your flagged dictations, labelled by captures.py (variant "captured").
+    Each carries its capture's details (mode, device, hotwords) as a fifth item."""
+    folder = os.path.join(cache_dir, "captured")
+    manifest = os.path.join(folder, "manifest.json")
+    if not os.path.exists(manifest):
+        return []
+    with open(manifest, encoding="utf-8") as f:
+        clips = json.load(f)
+    return [(c["id"], "captured", os.path.join(folder, f"{c['id']}.wav"), c["expected"], c) for c in clips]

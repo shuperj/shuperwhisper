@@ -85,6 +85,36 @@ def strip_hint_echo(words: list, hint: Optional[str]) -> list:
     return [w for j, w in enumerate(words) if j not in drop]
 
 
+def transcribe_once(transcriber, audio: np.ndarray, hotwords: Optional[str] = None) -> str:
+    """Type-on-stop: one accurate pass over the whole recording.
+
+    The dictionary goes in as hotwords only: given a "Vocabulary:" prompt
+    as well, Base types the list back on near-silence. Shared by the app
+    and the benchmark, so the benchmark scores exactly what gets typed.
+    """
+    text = transcriber.transcribe(audio, hotwords=hotwords)
+    words = text.split()
+    kept = strip_hint_echo(words, hotwords)
+    return " ".join(kept) if len(kept) != len(words) else text
+
+
+def _repeat_start(words: list[str], lo: int, hi: int) -> int:
+    """First index in [lo, hi) where a word, or a phrase of up to three,
+    repeats the words just before it ("open it it", "once we once we've": a
+    phrase's last word may run longer, a lone word's may not, or "I imagine"
+    would count). ``hi`` if there is none."""
+    normed = [_norm(w) for w in words]
+    for i in range(max(lo, 1), hi):
+        for k in range(1, 4):
+            first, second = normed[i - k:i], normed[i:i + k]
+            if i - k < 0 or len(second) < k or not all(first):
+                continue
+            if first[:-1] == second[:-1] and (second[-1] == first[-1]
+                                              or k > 1 and second[-1].startswith(first[-1])):
+                return i
+    return hi
+
+
 def _sentence_end(word: str) -> str:
     """Trailing sentence punctuation of ``word`` ("" if none)."""
     return word[len(word.rstrip(_SENTENCE_END)):]
@@ -229,6 +259,10 @@ class LocalAgreement:
         # the buffer ends ("out." during a pause, "FDT" for a word half heard)
         # and must stay revisable.
         agree = min(agree, len(rebased) - self.HOLD_WORDS)
+        # A doubled word or phrase is often Whisper repeating itself at the
+        # end of the buffer during a pause ("open it it"). Never commit it on
+        # agreement; the pass that closes the utterance decides (commit_all).
+        agree = _repeat_start(rebased, n, agree)
         self._prev = rebased
         newly: list[str] = []
         if agree > n:
@@ -293,6 +327,9 @@ class StreamingSession:
     # How often to look for the end of an utterance. VAD is cheap; decoding
     # isn't, so it runs every ``interval``. Checking only at decodes missed
     # pauses that ended between two of them.
+    # Words a closing pass places this long after the end of speech were
+    # decoded from silence (Whisper's "...and I'll see you in the next one").
+    AFTER_SPEECH = 0.3
     POLL = 0.1
     BEAM = 1  # beam size of live passes (the final pass uses 5)
 
@@ -385,6 +422,12 @@ class StreamingSession:
         if len(chunk):
             self._buffer = np.concatenate([self._buffer, chunk])
         return self._speech_spans(self._buffer) if len(self._buffer) else []
+
+    def _spoken(self, timed: list, speech_end: int) -> list:
+        """Drop the words of a closing pass that end well after the speech
+        does: Whisper filled the silence with them."""
+        limit = speech_end / SAMPLE_RATE + self.AFTER_SPEECH
+        return [(w, end) for w, end in timed if end <= limit]
 
     def _close_utterance(self, timed: list, keep: int) -> None:
         """Commit the first ``keep`` words (their last sentence mark stays
@@ -528,7 +571,7 @@ class StreamingSession:
             self._cut_at_cap()
             return
         if silence_after >= self.END_SILENCE:
-            timed = self._decode_new(timestamps=True)
+            timed = self._spoken(self._decode_new(timestamps=True), speech_end)
             self._close_utterance(timed, len(timed))
             return
         if now < self._next_decode:
@@ -545,11 +588,14 @@ class StreamingSession:
                 self._tick()
             spans = self._close_gap(self._append_audio())
             if spans and spans[-1][1] > self._carry_end + self._margin:
-                self._emit(self._agreement.flush(self._decode_new(beam_size=5)), [], final=True)
+                timed = self._spoken(self._decode_new(beam_size=5, timestamps=True), spans[-1][1])
+                self._emit(self._agreement.flush([w for w, _end in timed]), [], final=True)
             elif self._carry_end and not self._agreement.held:
                 # Nothing new, and the last utterance closed without a
                 # sentence mark: re-read its carried words carefully.
-                self._emit(self._agreement.flush(self._decode(beam_size=5)), [], final=True)
+                speech_end = spans[-1][1] if spans else self._carry_end
+                timed = self._spoken(self._decode(beam_size=5, timestamps=True), speech_end)
+                self._emit(self._agreement.flush([w for w, _end in timed]), [], final=True)
             else:
                 # nothing new since the last utterance closed: its held
                 # sentence mark stands

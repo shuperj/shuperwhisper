@@ -112,6 +112,8 @@ class AppConfig:
     live_typing: str = "auto"
     shortcut: str = "tap"
     efficiency: str = "auto"
+    # Keep each dictation's audio and text for testing (captures.py).
+    save_dictations: bool = False
 
     # The sizes worth offering, by benchmarks/results/*-full.md: medium and
     # large-v3 are bigger than large-v3-turbo without being better for this.
@@ -133,13 +135,14 @@ class AppConfig:
         if self.efficiency not in VALID_EFFICIENCY:
             self.efficiency = "auto"
         self.input_device = _validate_device(self.input_device)
+        self.save_dictations = self.save_dictations is True
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 _CONFIG_FIELDS = ["hotkey", "model_size", "input_device", "language", "compute", "live_typing",
-                  "shortcut", "efficiency"]
+                  "shortcut", "efficiency", "save_dictations"]
 
 
 def load_config(path: str | None = None) -> AppConfig:

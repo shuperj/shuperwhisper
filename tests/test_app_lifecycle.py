@@ -26,6 +26,9 @@ class FakeRecorder:
     def read_new(self):
         return np.zeros(0, np.float32)
 
+    def recording(self):
+        return self.audio if getattr(self, "keep_all", False) else None
+
     def get_levels(self, n):
         return [0.0] * n
 
@@ -40,6 +43,7 @@ class FakeTranscriber:
         self.live_typing = live_typing
         self.requested = (model_size, compute, live_typing)
         self.device = "cuda"
+        self.model_size = "base.en" if model_size == "auto" else model_size
         self.live = live_typing != "off"
         self.fail = fail
         self.loaded = False
@@ -487,6 +491,29 @@ def test_efficiency_off_ignores_a_busy_gpu(make_app):
     assert not a.efficient and a.transcriber.requested[1] == "auto"
 
 
+def test_always_live_keeps_the_gpu_while_a_game_runs(make_app):
+    a = make_app(live_typing="on")
+    a.start()
+    a.gpu_monitor.on_change(True, "game.exe")
+    assert not a.efficient and a.transcriber.requested[1] == "auto"
+    assert a.efficiency_reason == ""
+
+
+def test_efficiency_on_still_wins_over_always_live(make_app):
+    a = make_app(live_typing="on", efficiency="on")
+    a.start()
+    assert a.efficient and a.transcriber.requested[1] == "cpu"
+
+
+def test_switching_to_always_live_leaves_efficiency_mode(make_app):
+    a = make_app()
+    a.start()
+    a.gpu_monitor.on_change(True, "game.exe")
+    assert a.efficient
+    a._apply_config(AppConfig(**{**a.config.to_dict(), "live_typing": "on"}))
+    assert not a.efficient and a.transcriber.requested == ("auto", "auto", "on")
+
+
 def test_efficiency_on_starts_on_the_processor(make_app):
     a = make_app(efficiency="on")
     assert a.transcriber.requested[1] == "cpu"
@@ -501,3 +528,77 @@ def test_tray_efficiency_choice_applies_and_saves(make_app, monkeypatch):
     a.start()
     a.set_efficiency("on")
     assert a.efficient and a.config.efficiency == "on" and saved == ["on"]
+
+
+# -- saving dictations for testing ---------------------------------------------------
+
+@pytest.fixture
+def capture_dir(tmp_path, monkeypatch):
+    folder = tmp_path / "captures"
+    monkeypatch.setattr(app_mod.captures, "capture_dir", lambda: str(folder))
+    return folder
+
+
+def test_dictations_are_not_saved_by_default(make_app, capture_dir):
+    a = make_app()
+    a.start()
+    a.transcriber.live = False
+    a.transcriber.text = "hello world"
+    a._on_record_start()
+    a._on_record_stop()
+    assert not capture_dir.exists()
+
+
+def test_type_on_stop_dictation_is_saved_when_asked(make_app, capture_dir):
+    a = make_app(save_dictations=True)
+    a.start()
+    a.dictionary.add("gitea")
+    a.transcriber.live = False
+    a.transcriber.text = "hello world"
+    a._on_record_start()
+    a._on_record_stop()
+    [meta] = app_mod.captures.all_meta(str(capture_dir))
+    assert meta["mode"] == "stop" and meta["hotwords"] == "gitea." and meta["seconds"] == 1.0
+    assert meta["trace"][-1][1:] == ["hello world", "", True]
+
+
+def test_live_dictation_is_saved_with_its_hypotheses(make_app, capture_dir):
+    FakeSession.script = [Hypothesis("", "hello", False), Hypothesis("hello", "world", False)]
+    a = make_app(save_dictations=True)
+    a.start()
+    a._on_record_start()
+    a._on_record_stop()
+    [meta] = app_mod.captures.all_meta(str(capture_dir))
+    assert meta["mode"] == "live"
+    assert [t[1:3] for t in meta["trace"]] == [["", "hello"], ["hello", "world"]]
+
+
+def test_cancelled_dictation_is_not_saved(make_app, capture_dir):
+    a = make_app(save_dictations=True)
+    a.start()
+    a.transcriber.live = False
+    a._on_record_start()
+    a._on_record_cancel()
+    assert not capture_dir.exists()
+
+
+def test_flag_last_dictation(make_app, capture_dir):
+    a = make_app(save_dictations=True)
+    a.start()
+    a.transcriber.live = False
+    a.transcriber.text = "hello world"
+    a._on_record_start()
+    a._on_record_stop()
+    cid = a.flag_last_dictation()
+    assert app_mod.captures.load(cid, str(capture_dir))["flagged"] is True
+
+
+def test_save_dictations_setting_survives_a_settings_change(make_app, monkeypatch):
+    saved = []
+    monkeypatch.setattr(app_mod, "save_config", lambda c: saved.append(c.save_dictations))
+    a = make_app()
+    a.start()
+    a.set_save_dictations(True)
+    assert a.config.save_dictations and saved == [True]
+    a._apply_config(AppConfig(**{**a.config.to_dict(), "language": "en"}))
+    assert a.config.save_dictations

@@ -4,6 +4,9 @@ where to stop for a second or so mid-sentence, as if thinking, to test that
 those don't become sentence breaks.
 
 The text is also the answer key, so read it as written, but naturally.
+Passages 28-32 use words from the app's dictionary (say claude.md as "claude
+dot M D", onebynine as "one by nine"); 33-36 use words that sound close to
+them but aren't, to check the dictionary doesn't put its words in their place.
 """
 
 OWN_SCRIPT = [
@@ -91,6 +94,28 @@ OWN_SCRIPT = [
      "happened to support both."),
     ("own-27-signoff",
      "Thanks again for all your help this week. Have a great weekend, and I'll see you on Monday."),
+    # Dictionary words (the app's own dictionary), to show the dictionary helps
+    # where they're said...
+    ("own-28-dict-gitea",
+     "I pushed the fix to gitea last night, so pull before you start."),
+    ("own-29-dict-shuper",
+     "Can you put the shuper logo at the top of the page [pause] and make it a little smaller?"),
+    ("own-30-dict-mackinaw",
+     "We're driving up to Mackinaw for the long weekend, so I'll be offline until Monday."),
+    ("own-31-dict-onebynine",
+     "Send the invoice from the onebynine account, not my personal one."),
+    ("own-32-dict-claude",
+     "Put the new commands in claude.md so the next session knows about them."),
+    # ...and words that sound close but aren't in it, to show it doesn't
+    # invent them where they aren't.
+    ("own-33-decoy-moving",
+     "We're [pause] moving the printer to the other office, [pause] so don't send anything to it today."),
+    ("own-34-decoy-kitty",
+     "My sister just got a kitty, and now every phone call is about the cat."),
+    ("own-35-decoy-super",
+     "I'm super busy today, [pause] but I can look at it first thing tomorrow."),
+    ("own-36-decoy-numbers",
+     "It was one or two people at most, and the score was nine to one by halftime."),
 ]
 
 

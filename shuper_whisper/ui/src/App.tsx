@@ -142,7 +142,7 @@ export default function App() {
             title="Efficiency mode"
             description={
               (efficiency.on ? `On now: ${efficiency.reason}. ` : "") +
-              "Runs dictation on the processor and frees the graphics card. Automatic turns it on while a game or another program uses the graphics card heavily."
+              "Runs dictation on the processor and frees the graphics card. Automatic turns it on while a game or another program uses the graphics card heavily, unless live typing is set to Always live."
             }
             error={errors.efficiency}
           >

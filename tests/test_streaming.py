@@ -69,6 +69,39 @@ class TestLocalAgreement:
         assert la.flush() == ["a", "b"]
 
 
+class TestRepeats:
+    """Whisper sometimes doubles a word at the end of the buffer while the
+    speaker pauses ("open it it"); two passes agreeing on it must not make
+    it permanent."""
+
+    def test_doubled_word_is_not_committed(self):
+        la = LocalAgreement()
+        la.update("you open it it".split())
+        assert la.update("you open it it the list".split()) == (["you", "open", "it"], ["it", "the", "list"])
+        # the next pass drops it: nothing to take back
+        assert la.update("you open it the list of".split()) == ([], ["the", "list", "of"])
+        assert la.update("you open it the list of mics".split()) == (["the", "list", "of"], ["mics"])
+
+    def test_repeated_phrase_with_a_longer_last_word_is_not_committed(self):
+        la = LocalAgreement()
+        la.update("remove them once we once we've".split())
+        newly, tentative = la.update("remove them once we once we've run".split())
+        assert newly == ["remove", "them", "once", "we"] and tentative[0] == "once"
+
+    def test_a_word_starting_like_the_one_before_is_no_repeat(self):
+        la = LocalAgreement()
+        la.update("so I imagine it".split())
+        assert la.update("so I imagine it works".split()) == (["so", "I", "imagine", "it"], ["works"])
+
+    def test_a_real_double_is_kept_when_the_utterance_ends(self):
+        la = LocalAgreement()
+        committed = la.update("I think that that is".split())[0]
+        committed += la.update("I think that that is right".split())[0]
+        assert committed == ["I", "think", "that"]
+        newly, tentative = la.commit_all("I think that that is right.".split())
+        assert committed + newly + tentative == ["I", "think", "that", "that", "is", "right", "."]
+
+
 class TestRewording:
     def test_reworded_commit_keeps_following_words(self):
         la = LocalAgreement()
@@ -100,9 +133,9 @@ class FakeTranscriber:
                          timestamps=False):
         self.calls.append((len(audio), initial_prompt, beam_size))
         words = self.decodes.pop(0) if self.decodes else []
-        if timestamps:  # a word every 0.25 s
-            return [(w, (i + 1) * 0.25) for i, w in enumerate(words)]
-        return words
+        if timestamps:  # a word every 0.25 s, unless the script says when
+            return [w if isinstance(w, tuple) else (w, (i + 1) * 0.25) for i, w in enumerate(words)]
+        return [w[0] if isinstance(w, tuple) else w for w in words]
 
 
 class Clock:
@@ -359,7 +392,8 @@ def test_new_speech_survives_carried_words_that_were_misheard():
         (0.4, [(0, 6400), (32000, 44800)]),
         (0.4, [(0, 6400), (32000, 51200)]),
     ]
-    decodes = [["send", "me", "a", "message?"], ["send", "me", "a", "message?"],
+    decodes = [["send", "me", "a", "message?"],
+               [("send", 0.1), ("me", 0.2), ("a", 0.3), ("message?", 0.4)],
                ["Hey,", "I", "am"],                          # no carried words: a miss
                ["Hey,", "I", "am", "just"],                  # second miss: drop the carry
                ["Hey,", "I", "am", "just"],                  # re-decode of the new speech alone
@@ -460,3 +494,18 @@ def test_live_passes_drop_a_copied_list():
                          on_auto_stop=lambda: None, hotwords=HINT)
     s._buffer = np.zeros(SR, np.float32)
     assert s._decode() == ["Hey"]
+
+
+def test_words_placed_after_the_speech_are_dropped():
+    # speech ends at 0.75 s; Whisper adds a sign-off in the silence after it
+    ticks = [
+        (0.4, [(0, 12000)]),
+        (0.4, [(0, 12000)]),
+        (1.2, [(0, 12000)]),        # long enough silence: the utterance closes
+    ]
+    decodes = [["send", "the"], ["send", "the", "report."],
+               [("send", 0.25), ("the", 0.5), ("report.", 0.75),
+                ("see", 1.2), ("you", 1.2), ("soon.", 1.2)]]
+    _s, hyps, _f, _ = run(ticks, decodes)
+    typed = " ".join(h.stable_delta for h in hyps if h.stable_delta)
+    assert "see" not in typed and "report" in typed
