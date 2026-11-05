@@ -90,10 +90,11 @@ To rebuild it: `scp benchmarks/extract_real.py` to the CT, run
 words, roughly four minutes) through the microphone ShuperWhisper uses, into
 `.audio/own/`. `bench.py --set own` scores just those; they're the "Your voice" column.
 
-**Your dictations** (`label_captures.py`): with "Save dictations for testing" on in the
-tray, ShuperWhisper keeps your last 50 dictations (audio, what was typed, the live
-hypotheses) in `%APPDATA%\ShuperWhisper\captures`. When one comes out wrong, click "Last
-dictation was wrong". `label_captures.py` shows each flagged one; you type what you
+**Your dictations** (`label_captures.py`): when a dictation comes out wrong, click "Last
+dictation was wrong" in the tray. ShuperWhisper always holds the last dictation in memory,
+so this saves it (audio, what was typed, the live hypotheses) to
+`%APPDATA%\ShuperWhisper\captures` even with saving off. With "Save dictations for
+testing" on, it keeps your last 50 there as you go. `label_captures.py` shows each flagged one; you type what you
 actually said and it becomes a clip in `.audio/captured/`, replayed with the dictionary
 it had. `--set captured` scores them, and the model test below includes them.
 

@@ -1,8 +1,9 @@
-"""Saved dictations, for testing ("Save dictations for testing" in the tray).
+"""Saved dictations, for testing (the tray's "Save dictations for testing",
+which keeps every one, and "Last dictation was wrong", which saves the last).
 
 Each dictation is kept as <id>.wav (16 kHz mono) plus <id>.json: how it ran
 (live or type-on-stop, device, model, dictionary), what was typed, and the
-hypotheses in order. "Last dictation was wrong" flags the newest one;
+hypotheses in order. Flagged ones are the ones that came out wrong;
 benchmarks/captures.py turns flagged ones into benchmark clips. Only the
 newest KEEP are kept. Nothing leaves the machine.
 """
