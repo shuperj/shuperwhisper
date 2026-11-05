@@ -75,7 +75,8 @@ def main():
         shutil.copyfile(wav, os.path.join(OUT, f"{m['id']}.wav"))
         manifest.append({"id": m["id"], "expected": said, "typed": m.get("typed", ""),
                          "mode": m.get("mode"), "device": m.get("device"), "model": m.get("model"),
-                         "hotwords": m.get("hotwords"), "time": m.get("time")})
+                         "hotwords": m.get("hotwords"), "replacements": m.get("replacements", []),
+                         "time": m.get("time")})
         with open(MANIFEST, "w", encoding="utf-8") as f:
             json.dump(manifest, f, indent=1)
         print(f"    kept as a test clip ({len(manifest)} in total)")

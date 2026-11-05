@@ -92,18 +92,31 @@ class _PeakGpu(threading.Thread):
 
 # -- dictionary and pace -------------------------------------------------------
 
-def dictionary_hotwords(spec: str):
+def load_dictionary(spec: str) -> tuple:
     """--hotwords: "none", "auto" (the dictionary the app uses: the installed
-    app's if there is one, else this checkout's) or a literal "a, b, c"."""
+    app's if there is one, else this checkout's) or a literal "a, b, c".
+    Returns (hotwords, replacements), as the app passes them."""
     if spec == "none":
-        return None
+        return None, []
     if spec != "auto":
-        return spec
+        return spec, []
     from shuper_whisper.dictionary import WordDictionary
     installed = os.path.join(os.environ.get("APPDATA", ""), "ShuperWhisper", "dictionary.json")
     d = WordDictionary(path=installed if os.path.exists(installed) else None)
     d.load()
-    return d.get_hotwords() or None
+    return d.get_hotwords() or None, d.get_replacements()
+
+
+# Pass times (seconds per greedy pass of 3 / 10 / 25 s of audio) that --pace
+# fixed charges, so a seed replays the same way however busy the machine is.
+# Measured on an RTX 3080 and its PC's processor (2026-11-05); a model not
+# listed uses what this run measured.
+REFERENCE_LATENCY = {
+    ("base.en", "cuda"): {"3": 0.08, "10": 0.21, "25": 0.43},
+    ("base.en", "cpu"): {"3": 0.66, "10": 0.86, "25": 1.33},
+}
+REFERENCE_LATENCY[("base", "cuda")] = REFERENCE_LATENCY[("base.en", "cuda")]
+REFERENCE_LATENCY[("base", "cpu")] = REFERENCE_LATENCY[("base.en", "cpu")]
 
 
 class FixedPace:
@@ -133,7 +146,7 @@ class FixedPace:
 
 # -- one model -----------------------------------------------------------------
 
-def _live(transcriber, audio, interval, speech_end, hotwords=None, pace=None):
+def _live(transcriber, audio, interval, speech_end, hotwords=None, pace=None, replacements=()):
     """Run a StreamingSession + LiveWriter over ``audio`` in simulated real time.
     ``lag``: seconds from ``speech_end`` until the field last changed.
     ``pace``: a FixedPace, or None to charge each step what it really took."""
@@ -161,6 +174,7 @@ def _live(transcriber, audio, interval, speech_end, hotwords=None, pace=None):
         start = stop = clear = lambda self: None
 
     writer = LiveWriter(send=send, read_context=lambda: field["text"], field_id=lambda: (1, None),
+                        replacements=lambda: replacements,
                         monitor_factory=Monitor, wait_modifiers=lambda timeout=1.0: True)
     writer.begin()
 
@@ -223,7 +237,7 @@ def _live(transcriber, audio, interval, speech_end, hotwords=None, pace=None):
 
 
 def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune: dict,
-            hotwords=None, repeat: int = 1, pace: str = "measured", seed: int = 0,
+            hotwords=None, replacements=(), repeat: int = 1, pace: str = "measured", seed: int = 0,
             slow: float = 1.0, own_hotwords: bool = False) -> dict:
     gpu = device == "cuda"
     base = _gpu_used() if gpu else 0
@@ -273,8 +287,9 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
         audio = _read_wav(path)
         # with --hotwords auto, a captured dictation replays with the dictionary it had
         hot = meta[0].get("hotwords") if meta and own_hotwords else hotwords
+        reps = [tuple(r) for r in meta[0].get("replacements", [])] if meta and own_hotwords else replacements
         t1 = time.perf_counter()
-        batch = {"text": join(clean(transcribe_once(t, audio, hot)), ""), "seconds": time.perf_counter() - t1}
+        batch = {"text": join(clean(transcribe_once(t, audio, hot), reps), ""), "seconds": time.perf_counter() - t1}
         padded = np.concatenate([audio, np.zeros(int(TRAILING_SILENCE * SR), np.float32)])
         spans = silero_speech_spans(audio)
         speech_end = max(0.0, spans[-1][1] / SR - 0.1) if spans else 0.0  # VAD pads 0.1 s
@@ -282,8 +297,9 @@ def run_one(model: str, device: str, compute: str, items, skip_live: bool, tune:
             row = {"clip": clip_id, "variant": variant, "expected": expected, "seconds": len(audio) / SR,
                    "hotwords": hot, "seed": seed + run, "batch": batch}
             if not skip_live:
-                fixed = FixedPace(result["pass_latency"], seed + run, slow) if pace == "fixed" else None
-                row["live"] = _live(t, padded, 0.4 if gpu else 1.0, speech_end, hot, fixed)
+                table = REFERENCE_LATENCY.get((model, device), result["pass_latency"])
+                fixed = FixedPace(table, seed + run, slow) if pace == "fixed" else None
+                row["live"] = _live(t, padded, 0.4 if gpu else 1.0, speech_end, hot, fixed, reps)
             clips.append(row)
             text = row["live"]["text"] if "live" in row else batch["text"]
             score, extra = wer(expected, text), invented(expected, text, hot or "")
@@ -507,7 +523,7 @@ def main():
     if args.child:
         build_audio(cache)  # the latency clip
         result = run_one(args.child, args.device, compute, items, args.skip_live, tune,
-                         hotwords=dictionary_hotwords(args.hotwords), repeat=args.repeat, pace=args.pace,
+                         *load_dictionary(args.hotwords), repeat=args.repeat, pace=args.pace,
                          seed=args.seed, slow=args.slow, own_hotwords=args.hotwords == "auto")
         with open(args.out, "w", encoding="utf-8") as f:
             json.dump(result, f, indent=1)

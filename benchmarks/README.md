@@ -12,15 +12,29 @@ python benchmarks/bench.py --models large-v3-turbo --compute float16
 python benchmarks/bench.py --models large-v3-turbo --set synthetic --clips pause --tune JOIN_GAP=0.4
 python benchmarks/record.py                                 # add your own voice (~4 min)
 python benchmarks/bench.py --set own                        # score every model on it
+python benchmarks/bench.py --set own --models base.en --repeat 3 --pace fixed   # invented words, replayable
+python benchmarks/label_captures.py                         # turn flagged dictations into clips
+python benchmarks/bench.py --set captured --models base.en --repeat 3 --pace fixed
+pytest tests/test_quality.py --run-model                    # fail if invented words go up
 ```
 
 Each model runs in its own process. Results go to `benchmarks/results/<run>.md`
 (raw JSON per model under `results/raw/`, gitignored). `--summarise results/raw/<run>`
 re-scores a finished run from its stored text, so scoring changes apply to old runs.
 
-Options: `--set all|synthetic|real`, `--clips <id prefix>...`, `--variants david sermon ...`,
-`--skip-live` (type-on-stop only), `--tune NAME=VALUE` (any `StreamingSession`
-setting), `--label` (added to the file name).
+Options: `--set all|synthetic|real|own|captured`, `--clips <id prefix>...`,
+`--variants david sermon ...`, `--skip-live` (type-on-stop only), `--tune NAME=VALUE`
+(any `StreamingSession` setting), `--label` (added to the file name), and:
+
+- `--hotwords auto|none|"a, b"`: the dictionary. `auto` (the default) is the one the app
+  uses (the installed app's `%APPDATA%\ShuperWhisper\dictionary.json` if there is one),
+  passed as the app passes it: as hotwords, and its phonetic hints as replacements.
+- `--repeat N`: live typing runs N times per clip. Its mistakes depend on timing, so
+  one run per clip misses most of them.
+- `--pace fixed --seed S`: each live pass costs a fixed time for that much audio
+  (`REFERENCE_LATENCY` in `bench.py`, for base/base.en) times a seeded jitter, instead
+  of however long it took. The same seed replays the same way on a busy machine.
+  `--slow X` makes every pass X times slower, as on a GPU shared with a game.
 
 ## What is measured
 
@@ -40,8 +54,12 @@ setting), `--label` (added to the file name).
   time: the clock advances by the poll interval plus however long each step took).
 - **False / missed breaks**: a sentence ended where it shouldn't ("out. Right now.")
   or a real sentence end was lost.
-- **Invented words**: anything typed for 10 s of room noise with clicks, plus extra
-  words around a 12 s quiet stretch (Whisper's hallucinations).
+- **Invented words** (its own section): words typed that weren't said, per 1000 words
+  said, each listed with its clip and seed (`metrics.invented`): extra words (a made-up
+  ending, a doubled word), or a dictionary word in place of another. A compound word
+  split in two ("voice meter") isn't counted. The older count beside the sentence breaks
+  is anything typed for 10 s of room noise with clicks, plus extra words around a 12 s
+  quiet stretch.
 
 ## Clips
 
@@ -71,3 +89,18 @@ To rebuild it: `scp benchmarks/extract_real.py` to the CT, run
 **Your voice** (`record.py`): you read `own_script.py` (27 everyday passages, about 750
 words, roughly four minutes) through the microphone ShuperWhisper uses, into
 `.audio/own/`. `bench.py --set own` scores just those; they're the "Your voice" column.
+
+**Your dictations** (`label_captures.py`): with "Save dictations for testing" on in the
+tray, ShuperWhisper keeps your last 50 dictations (audio, what was typed, the live
+hypotheses) in `%APPDATA%\ShuperWhisper\captures`. When one comes out wrong, click "Last
+dictation was wrong". `label_captures.py` shows each flagged one; you type what you
+actually said and it becomes a clip in `.audio/captured/`, replayed with the dictionary
+it had. `--set captured` scores them, and the model test below includes them.
+
+## Regression test
+
+`pytest tests/test_quality.py --run-model` runs base.en over your voice and your
+dictations (live on the GPU at normal and busy pace, three seeds each, and type-on-stop
+on the processor) and fails if invented words go above `quality_budget.json`. It is
+skipped without `--run-model` or without the recordings. Lower the budget when a change
+brings them down.

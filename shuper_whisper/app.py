@@ -326,6 +326,7 @@ class ShuperWhisperApp:
                 "device": self.transcriber.device,
                 "model": self.transcriber.model_size,
                 "hotwords": self.dictionary.get_hotwords() or None,
+                "replacements": self.dictionary.get_replacements(),
                 "typed": getattr(self.writer, "typed", ""),
                 "trace": token.trace,
             })

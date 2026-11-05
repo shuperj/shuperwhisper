@@ -25,6 +25,11 @@ demand (`--setup-gpu`, `shuper_whisper/gpu_runtime.py`), never bundled.
 Releases: tag `vX.Y.Z` on main, then `gh release create` on `shuperj/shuperwhisper`
 (GitHub, mirrored from Gitea) with the installer and a zip of `dist/ShuperWhisper`.
 Model choice and live-typing tuning: `benchmarks/` (README there; results in `benchmarks/results/`).
+Invented words (words typed that weren't said) are the regression to watch:
+`python benchmarks/bench.py --set own --models base.en --repeat 3 --pace fixed` lists each one,
+and `pytest tests/test_quality.py --run-model` fails if they rise above `benchmarks/quality_budget.json`.
+Real failures become clips via the tray's "Save dictations for testing" / "Last dictation was wrong"
+and `python benchmarks/label_captures.py`.
 
 ## Integrations
 - Windows 10/11 x64 only; injects text at the active cursor
