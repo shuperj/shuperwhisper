@@ -245,6 +245,15 @@ def test_stop_mid_utterance_does_final_beam_pass():
     assert s._transcriber.calls[-1][2] == 5
 
 
+def test_utterance_close_is_a_beam_5_pass():
+    # The closing pass commits words and decodes the pause after them; at
+    # beam 1 Whisper filled that pause ("transition sting. dang.").
+    ticks = [(0.4, [(0, 6400)]), (0.4, [(0, 12800)]), (1.2, [(0, 12800)])]
+    decodes = [["send", "the"], ["send", "the", "report"], ["Send", "the", "report."]]
+    s, _h, _f, _a = run(ticks, decodes)
+    assert [beam for _n, _p, beam in s._transcriber.calls] == [1, 1, 5]
+
+
 def test_auto_stop_after_30s_without_speech():
     ticks = [(0.4, [])] * 80                # 80 * 0.4 s = 32 s of silence
     _s, _h, _f, auto = run(ticks, [])
