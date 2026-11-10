@@ -600,7 +600,9 @@ class StreamingSession:
             self._cut_at_cap()
             return
         if silence_after >= self.END_SILENCE:
-            timed = self._spoken(self._decode_new(timestamps=True), speech_end)
+            # Beam 5, like the final pass: this one commits, and it decodes
+            # the pause too, which beam 1 sometimes fills ("sting. dang.").
+            timed = self._spoken(self._decode_new(beam_size=5, timestamps=True), speech_end)
             self._close_utterance(timed, len(timed))
             return
         if now < self._next_decode:
