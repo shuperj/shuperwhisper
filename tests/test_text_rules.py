@@ -74,6 +74,11 @@ class TestFillers:
         assert clean("Sounds good um. See you") == "Sounds good. See you"
         assert clean("I said um.") == "I said."
 
+    def test_mhm_dropped(self):
+        # Whisper's favourite on near-silence: "Add that back in. Mhm. Mhm. Mhm."
+        assert clean("Add that back in. Mhm. Mhm. Mhm.") == "Add that back in."
+        assert clean("Mm-hmm, that works.") == "that works."
+
     def test_hyphenated_uh_kept(self):
         assert clean("The Uh-60 helicopter") == "The Uh-60 helicopter"
 

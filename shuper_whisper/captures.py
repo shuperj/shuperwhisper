@@ -1,23 +1,64 @@
 """Saved dictations, for testing (the tray's "Save dictations for testing",
 which keeps every one, and "Last dictation was wrong", which saves the last).
 
-Each dictation is kept as <id>.wav (16 kHz mono) plus <id>.json: how it ran
-(live or type-on-stop, device, model, dictionary), what was typed, and the
-hypotheses in order. Flagged ones are the ones that came out wrong;
-benchmarks/captures.py turns flagged ones into benchmark clips. Only the
+Each dictation is kept as <id>.wav (16 kHz mono, 32-bit float: exactly what
+the model heard, faint background included, which 16-bit rounded to silence)
+plus <id>.json: how it ran (live or type-on-stop, device, model, dictionary),
+what was typed, the hypotheses in order, and every decode's input and output.
+Flagged ones are the ones that came out wrong; benchmarks/label_captures.py
+turns them into benchmark clips. Only the
 newest KEEP are kept. Nothing leaves the machine.
 """
 
 import datetime
 import json
 import os
-import wave
+import struct
 from typing import Optional
 
 import numpy as np
 
 SAMPLE_RATE = 16000
 KEEP = 50
+
+
+def write_wav(path: str, audio: np.ndarray) -> None:
+    """16 kHz mono 32-bit float WAV (format 3), the samples as the model got them."""
+    data = np.asarray(audio, dtype="<f4").tobytes()
+    fmt = struct.pack("<HHIIHHH", 3, 1, SAMPLE_RATE, SAMPLE_RATE * 4, 4, 32, 0)
+    fact = struct.pack("<I", len(data) // 4)
+    with open(path, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + len(fact) + 8 + len(data)) + b"WAVE")
+        f.write(b"fmt " + struct.pack("<I", len(fmt)) + fmt)
+        f.write(b"fact" + struct.pack("<I", len(fact)) + fact)
+        f.write(b"data" + struct.pack("<I", len(data)) + data)
+
+
+def read_wav(path: str) -> np.ndarray:
+    """A mono WAV as float32: 32-bit float (saved dictations) or 16-bit PCM."""
+    with open(path, "rb") as f:
+        raw = f.read()
+    if raw[:4] != b"RIFF" or raw[8:12] != b"WAVE":
+        raise ValueError(f"not a WAV file: {path}")
+    pos, fmt, data = 12, None, None
+    while pos + 8 <= len(raw):
+        tag, size = raw[pos:pos + 4], struct.unpack("<I", raw[pos + 4:pos + 8])[0]
+        body = raw[pos + 8:pos + 8 + size]
+        if tag == b"fmt ":
+            fmt = struct.unpack("<HHIIHH", body[:16])
+        elif tag == b"data":
+            data = body
+        pos += 8 + size + (size & 1)
+    if fmt is None or data is None:
+        raise ValueError(f"no audio in {path}")
+    kind, channels, _rate, _bps, _align, bits = fmt
+    if kind == 3 and bits == 32:
+        samples = np.frombuffer(data, "<f4")
+    elif kind == 1 and bits == 16:
+        samples = np.frombuffer(data, "<i2").astype(np.float32) / 32768
+    else:
+        raise ValueError(f"unsupported WAV ({kind}, {bits}-bit): {path}")
+    return samples.reshape(-1, channels).mean(axis=1).astype(np.float32) if channels > 1         else samples.astype(np.float32)
 
 
 def capture_dir() -> str:
@@ -43,11 +84,7 @@ def save(audio: np.ndarray, meta: dict, folder: Optional[str] = None) -> str:
     while os.path.exists(os.path.join(folder, f"{cid}.json")):  # same millisecond
         n += 1
         cid = cid[:23] + f"-{n}"
-    with wave.open(os.path.join(folder, f"{cid}.wav"), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(SAMPLE_RATE)
-        w.writeframes((np.clip(audio, -1, 1) * 32767).astype(np.int16).tobytes())
+    write_wav(os.path.join(folder, f"{cid}.wav"), audio)
     meta = {"id": cid, "time": now.isoformat(timespec="seconds"),
             "seconds": round(len(audio) / SAMPLE_RATE, 2), "flagged": False, **meta}
     with open(os.path.join(folder, f"{cid}.json"), "w", encoding="utf-8") as f:

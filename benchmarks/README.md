@@ -92,7 +92,8 @@ words, roughly four minutes) through the microphone ShuperWhisper uses, into
 
 **Your dictations** (`label_captures.py`): when a dictation comes out wrong, click "Last
 dictation was wrong" in the tray. ShuperWhisper always holds the last dictation in memory,
-so this saves it (audio, what was typed, the live hypotheses) to
+so this saves it (the audio exactly as the model heard it, what was typed, the live
+hypotheses and every decode's input and output) to
 `%APPDATA%\ShuperWhisper\captures` even with saving off. With "Save dictations for
 testing" on, it keeps your last 50 there as you go. `label_captures.py` shows each flagged one; you type what you
 actually said and it becomes a clip in `.audio/captured/`, replayed with the dictionary

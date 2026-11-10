@@ -509,3 +509,24 @@ def test_words_placed_after_the_speech_are_dropped():
     _s, hyps, _f, _ = run(ticks, decodes)
     typed = " ".join(h.stable_delta for h in hyps if h.stable_delta)
     assert "see" not in typed and "report" in typed
+
+
+def test_a_run_of_repeats_at_the_end_keeps_one_copy():
+    ticks = [(0.4, [(0, 16000)]), (0.4, [(0, 16000)]), (1.2, [(0, 16000)])]
+    decodes = [["no,", "thank"], ["no,", "thank", "you."],
+               [("No,", 0.2), ("thank", 0.4), ("you.", 0.5), ("Thank", 0.6), ("you,", 0.7),
+                ("thank", 0.8), ("you,", 0.9), ("thank", 1.0), ("you.", 1.0)]]
+    _s, hyps, _f, _ = run(ticks, decodes)
+    typed = " ".join(h.stable_delta for h in hyps if h.stable_delta)
+    assert typed.lower().count("thank") == 1
+
+
+def test_every_decode_is_reported():
+    seen = []
+    session = StreamingSession(
+        transcriber=FakeTranscriber([["hello", "there"]]), read_audio=lambda: np.zeros(0, np.float32),
+        on_hypothesis=lambda h: None, on_finished=lambda e: None, on_auto_stop=lambda: None,
+        speech_spans=lambda audio: [], on_decode=seen.append)
+    session._buffer = np.zeros(SR, np.float32)
+    session._decode(beam_size=5, timestamps=True)
+    assert seen == [{"seconds": 1.0, "beam": 5, "prompt": None, "words": [("hello", 0.25), ("there", 0.5)]}]

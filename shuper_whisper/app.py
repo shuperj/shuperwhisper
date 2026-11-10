@@ -57,6 +57,10 @@ class _Dictation:
         self.field = None  # where the indicator was placed
         self.started = time.monotonic()
         self.trace: list = []  # (seconds, stable, tentative, final) for a saved dictation
+        self.decodes: list = []  # every pass Whisper made, with what it returned
+
+    def log_decode(self, decode: dict) -> None:
+        self.decodes.append({"t": round(time.monotonic() - self.started, 2), **decode})
 
 
 class ShuperWhisperApp:
@@ -213,6 +217,7 @@ class ShuperWhisperApp:
                     on_auto_stop=lambda: self._auto_stop(token),
                     hotwords=self.dictionary.get_hotwords() or None,
                     interval=0.4 if self.transcriber.device == "cuda" else 1.0,
+                    on_decode=token.log_decode,
                 )
             self._start_level_monitoring(token)
             if token.session:
@@ -282,7 +287,7 @@ class ShuperWhisperApp:
             audio = self.recorder.stop_recording()
             if not token.cancelled and not self.recorder.stream_error and not is_silent(audio):
                 text = transcribe_once(self.transcriber, audio,
-                                       self.dictionary.get_hotwords() or None)
+                                       self.dictionary.get_hotwords() or None, token.log_decode)
                 if text:
                     self._on_hypothesis(Hypothesis(text, "", True), token)
         except Exception as e:
@@ -336,6 +341,7 @@ class ShuperWhisperApp:
                 "replacements": self.dictionary.get_replacements(),
                 "typed": getattr(self.writer, "typed", ""),
                 "trace": token.trace,
+                "decodes": token.decodes,
             }
             cid = captures.save(audio, meta) if self.config.save_dictations else None
             self._last_dictation = {"audio": audio, "meta": meta, "id": cid}
