@@ -85,7 +85,8 @@ def strip_hint_echo(words: list, hint: Optional[str]) -> list:
     return [w for j, w in enumerate(words) if j not in drop]
 
 
-def transcribe_once(transcriber, audio: np.ndarray, hotwords: Optional[str] = None) -> str:
+def transcribe_once(transcriber, audio: np.ndarray, hotwords: Optional[str] = None,
+                    on_decode: Optional[Callable[[dict], None]] = None) -> str:
     """Type-on-stop: one accurate pass over the whole recording.
 
     The dictionary goes in as hotwords only: given a "Vocabulary:" prompt
@@ -93,6 +94,8 @@ def transcribe_once(transcriber, audio: np.ndarray, hotwords: Optional[str] = No
     and the benchmark, so the benchmark scores exactly what gets typed.
     """
     text = transcriber.transcribe(audio, hotwords=hotwords)
+    if on_decode:
+        on_decode({"seconds": round(len(audio) / SAMPLE_RATE, 2), "beam": 5, "words": text.split()})
     words = text.split()
     kept = strip_hint_echo(words, hotwords)
     return " ".join(kept) if len(kept) != len(words) else text
@@ -358,7 +361,8 @@ class StreamingSession:
                  hotwords: Optional[str] = None,
                  interval: float = 0.4,
                  speech_spans: Callable[[np.ndarray], list] = silero_speech_spans,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 on_decode: Optional[Callable[[dict], None]] = None):
         self._transcriber = transcriber
         self._read_audio = read_audio
         self._on_hypothesis = on_hypothesis
@@ -370,6 +374,7 @@ class StreamingSession:
         self._interval = interval
         self._speech_spans = speech_spans
         self._clock = clock
+        self._on_decode = on_decode  # every pass, for a saved dictation (captures.py)
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._agreement = LocalAgreement()
@@ -413,9 +418,16 @@ class StreamingSession:
 
     def _decode(self, beam_size: Optional[int] = None, timestamps: bool = False):
         started = self._clock()
+        prompt, beam = self._prompt(), beam_size or self.BEAM
         result = self._transcriber.transcribe_words(
-            self._buffer, initial_prompt=self._prompt(), hotwords=self._hotwords,
-            beam_size=beam_size or self.BEAM, timestamps=timestamps)
+            self._buffer, initial_prompt=prompt, hotwords=self._hotwords,
+            beam_size=beam, timestamps=timestamps)
+        if self._on_decode:
+            try:
+                self._on_decode({"seconds": round(len(self._buffer) / SAMPLE_RATE, 2), "beam": beam,
+                                 "prompt": prompt, "words": list(result)})
+            except Exception:
+                pass  # the log never gets in the way of typing
         result = strip_hint_echo(result, self._hotwords)
         self._interval = max(self._base_interval, (self._clock() - started) * 1.2)
         return result

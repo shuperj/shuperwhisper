@@ -560,6 +560,8 @@ def test_type_on_stop_dictation_is_saved_when_asked(make_app, capture_dir):
     [meta] = app_mod.captures.all_meta(str(capture_dir))
     assert meta["mode"] == "stop" and meta["hotwords"] == "gitea." and meta["seconds"] == 1.0
     assert meta["trace"][-1][1:] == ["hello world", "", True]
+    [decode] = meta["decodes"]
+    assert decode["beam"] == 5 and decode["words"] == ["hello", "world"] and decode["seconds"] == 1.0
 
 
 def test_live_dictation_is_saved_with_its_hypotheses(make_app, capture_dir):

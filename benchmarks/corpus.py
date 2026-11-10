@@ -109,9 +109,11 @@ foreach ($j in $jobs) {
 
 
 def _read_wav(path: str) -> np.ndarray:
-    import wave
-    with wave.open(path) as w:
-        return np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    """16-bit (rendered and recorded clips) or 32-bit float (saved dictations)."""
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from shuper_whisper.captures import read_wav
+    return read_wav(path)
 
 
 def _write_wav(path: str, audio: np.ndarray) -> None:

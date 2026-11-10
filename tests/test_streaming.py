@@ -519,3 +519,14 @@ def test_a_run_of_repeats_at_the_end_keeps_one_copy():
     _s, hyps, _f, _ = run(ticks, decodes)
     typed = " ".join(h.stable_delta for h in hyps if h.stable_delta)
     assert typed.lower().count("thank") == 1
+
+
+def test_every_decode_is_reported():
+    seen = []
+    session = StreamingSession(
+        transcriber=FakeTranscriber([["hello", "there"]]), read_audio=lambda: np.zeros(0, np.float32),
+        on_hypothesis=lambda h: None, on_finished=lambda e: None, on_auto_stop=lambda: None,
+        speech_spans=lambda audio: [], on_decode=seen.append)
+    session._buffer = np.zeros(SR, np.float32)
+    session._decode(beam_size=5, timestamps=True)
+    assert seen == [{"seconds": 1.0, "beam": 5, "prompt": None, "words": [("hello", 0.25), ("there", 0.5)]}]
