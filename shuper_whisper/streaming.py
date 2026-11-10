@@ -115,6 +115,23 @@ def _repeat_start(words: list[str], lo: int, hi: int) -> int:
     return hi
 
 
+def _trim_repeat_run(timed: list, min_copies: int = 3) -> list:
+    """A pass that ends in the same word or phrase (up to three words) three
+    or more times in a row ("thank you, thank you, thank you, thank you") is
+    Whisper looping on silence: keep the first copy."""
+    normed = [_norm(w) for w, _end in timed]
+    for k in range(1, 4):
+        unit = normed[len(normed) - k:]
+        if len(unit) < k or not all(unit):
+            continue
+        copies, start = 1, len(normed) - k
+        while start - k >= 0 and normed[start - k:start] == unit:
+            copies, start = copies + 1, start - k
+        if copies >= min_copies:
+            return timed[:start + k]
+    return timed
+
+
 def _sentence_end(word: str) -> str:
     """Trailing sentence punctuation of ``word`` ("" if none)."""
     return word[len(word.rstrip(_SENTENCE_END)):]
@@ -427,7 +444,7 @@ class StreamingSession:
         """Drop the words of a closing pass that end well after the speech
         does: Whisper filled the silence with them."""
         limit = speech_end / SAMPLE_RATE + self.AFTER_SPEECH
-        return [(w, end) for w, end in timed if end <= limit]
+        return _trim_repeat_run([(w, end) for w, end in timed if end <= limit])
 
     def _close_utterance(self, timed: list, keep: int) -> None:
         """Commit the first ``keep`` words (their last sentence mark stays

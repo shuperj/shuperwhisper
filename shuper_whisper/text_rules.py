@@ -35,7 +35,8 @@ _AMBIGUOUS_COMMANDS = (("period", "."), ("colon", ":"))
 
 # um, umm, uh, uhh, erm, hmm -- with an optional comma on either side and
 # whatever punctuation followed it (handled in _drop_filler).
-_FILLER_RE = re.compile(r",?\s*\b(?:u+m+|u+h+|e+r+m+|h+m+)\b(?!-)([,.!?]?)", re.IGNORECASE)
+# "Mhm" / "Mm-hmm" too: Whisper's favourite on near-silence ("in. Mhm. Mhm. Mhm.").
+_FILLER_RE = re.compile(r",?\s*\b(?:u+m+|u+h+|e+r+m+|h+m+|m+-?h+m+)\b(?!-)([,.!?]?)", re.IGNORECASE)
 # Em dash, en dash, double hyphen, or a hyphen with spaces on both sides.
 _DASH_RE = re.compile(r"\s*(?:—|–|--)\s*|\s+-\s+")
 _TRAILING_ELLIPSIS_RE = re.compile(r"\s*(?:\.{3,}|…)\s*$")
